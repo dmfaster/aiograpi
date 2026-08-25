@@ -110,6 +110,28 @@ class UserMixin(ClientMixin):
         user = await self.user_info_by_username(username)
         return str(user.pk)
 
+    async def user_id_from_username_v1_once(self, username: str) -> str:
+        """Resolve one username with exactly one private API attempt.
+
+        This primitive is intended for durable workers that own retry and
+        checkpoint policy outside aiograpi. It never falls back to a public
+        endpoint and disables the private request layer's transient retry.
+        """
+        username = self._normalize_username(username)
+        try:
+            result = await self.private_request(
+                f"users/{username}/usernameinfo/",
+                retry_transient=False,
+                retry_without_cursor=False,
+            )
+        except ClientNotFoundError as e:
+            raise UserNotFound(e, username=username, **self.last_json)
+        user = result.get("user") or {}
+        user_id = str(user.get("pk") or user.get("id") or "").strip()
+        if not user_id:
+            raise UserNotFound("User not found", username=username, **self.last_json)
+        return user_id
+
     async def user_short_gql(self, user_id: str) -> UserShort:
         """
         Get full media id
@@ -896,6 +918,8 @@ class UserMixin(ClientMixin):
         result = await self.private_request(
             f"friendships/{user_id}/following/",
             params=params,
+            retry_transient=False,
+            retry_without_cursor=False,
         )
         users = [extract_user_short(user) for user in result.get("users", [])]
         return users, str(result.get("next_max_id") or "")
@@ -1136,6 +1160,8 @@ class UserMixin(ClientMixin):
         result = await self.private_request(
             f"friendships/{user_id}/followers/",
             params=params,
+            retry_transient=False,
+            retry_without_cursor=False,
         )
         users = [extract_user_short(user) for user in result.get("users", [])]
         return users, str(result.get("next_max_id") or "")

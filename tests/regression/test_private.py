@@ -8,8 +8,11 @@ from aiograpi.exceptions import (
     AccountEditError,
     AccountSuspended,
     BadPassword,
+    ChallengeRequired,
     ClientConnectionError,
+    ClientIncompleteReadError,
     ClientNotFoundError,
+    ClientUnknownError,
     DirectMessageRequestsDisabled,
 )
 
@@ -179,6 +182,60 @@ class PrivateRequestRegressionTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result, {"status": "ok"})
         self.assertEqual(client.private.post.await_count, 2)
         self.assertEqual(sleep.await_args_list.count(unittest.mock.call(2)), 1)
+
+    async def test_private_request_strict_mode_does_not_retry_incomplete_reads(self):
+        client = self._build_client()
+        client._user_id = "123"
+        client.private.post = AsyncMock(
+            side_effect=httpx_ext.RemoteProtocolError("peer closed the response early")
+        )
+
+        with (
+            unittest.mock.patch("aiograpi.mixins.private.asyncio.sleep", new_callable=AsyncMock) as sleep,
+            self.assertRaises(ClientIncompleteReadError),
+        ):
+            await client.private_request(
+                "test/",
+                data={"_uuid": client.uuid},
+                with_signature=False,
+                retry_transient=False,
+                retry_without_cursor=False,
+            )
+
+        self.assertEqual(client.private.post.await_count, 1)
+        self.assertNotIn(unittest.mock.call(2), sleep.await_args_list)
+
+    async def test_send_private_request_strict_mode_never_drops_a_failed_cursor(self):
+        client = self._build_client()
+        response = self._response({"message": "server error", "status": "fail"}, status_code=500)
+        client.private.get = AsyncMock(return_value=response)
+        params = {"max_id": "cursor-1"}
+
+        with self.assertRaises(ClientUnknownError):
+            await client._send_private_request(
+                "friendships/123/followers/",
+                params=params,
+                retry_without_cursor=False,
+            )
+
+        self.assertEqual(client.private.get.await_count, 1)
+        self.assertEqual(params["max_id"], "cursor-1")
+
+    async def test_private_request_strict_mode_bypasses_exception_recovery_hooks(self):
+        client = self._build_client()
+        client._user_id = "123"
+        client.handle_exception = unittest.mock.Mock()
+        client._send_private_request = AsyncMock(side_effect=ChallengeRequired("challenge"))
+
+        with self.assertRaises(ChallengeRequired):
+            await client.private_request(
+                "friendships/123/followers/",
+                retry_transient=False,
+                retry_without_cursor=False,
+            )
+
+        client._send_private_request.assert_awaited_once()
+        client.handle_exception.assert_not_called()
 
     async def test_send_private_request_promotes_direct_message_requests_disabled_status_fail(self):
         client = self._build_client()

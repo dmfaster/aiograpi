@@ -48,6 +48,19 @@ class UserMixinRegressionTestCase(unittest.IsolatedAsyncioTestCase):
         client.username_from_user_id_gql.assert_awaited_once_with("123")
         client.user_info_v1.assert_awaited_once_with("123")
 
+    async def test_user_id_from_username_v1_once_disables_hidden_retries(self):
+        client = Client()
+        client.private_request = AsyncMock(return_value={"user": {"pk": "123"}})
+
+        user_id = await client.user_id_from_username_v1_once(" @Example ")
+
+        self.assertEqual(user_id, "123")
+        client.private_request.assert_awaited_once_with(
+            "users/example/usernameinfo/",
+            retry_transient=False,
+            retry_without_cursor=False,
+        )
+
     async def test_username_from_user_id_uses_private_first_when_authorized(self):
         client = Client()
         client.authorization_data = {"sessionid": "sessionid-value", "ds_user_id": "1"}
@@ -438,6 +451,8 @@ class UserMixinRegressionTestCase(unittest.IsolatedAsyncioTestCase):
                 "order": "date_followed_latest",
                 "max_id": "cursor-1",
             },
+            retry_transient=False,
+            retry_without_cursor=False,
         )
 
     async def test_user_following_v1_page_rejects_oversized_page(self):
