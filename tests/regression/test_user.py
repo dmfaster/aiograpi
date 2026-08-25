@@ -25,6 +25,18 @@ class UserMixinRegressionTestCase(unittest.IsolatedAsyncioTestCase):
         client.android_device_id = "android-device"
         return client
 
+    async def test_user_caches_are_isolated_between_clients(self):
+        first = Client()
+        second = Client()
+
+        first._users_cache["1"] = Mock(username="first")
+        first._usernames_cache["first"] = "1"
+        first._users_followers["1"] = {"2": Mock(username="follower")}
+
+        self.assertEqual(second._users_cache, {})
+        self.assertEqual(second._usernames_cache, {})
+        self.assertEqual(second._users_followers, {})
+
     async def test_username_from_user_id_fallback_awaits_user_info(self):
         client = Client()
         client.username_from_user_id_gql = AsyncMock(side_effect=ClientError("graphql failed"))
@@ -395,6 +407,44 @@ class UserMixinRegressionTestCase(unittest.IsolatedAsyncioTestCase):
 
         client.private_request.assert_awaited_once()
         self.assertEqual(client.private_request.call_args.kwargs["params"]["order"], "date_followed_latest")
+
+    async def test_user_followers_v1_page_makes_one_request_and_returns_cursor(self):
+        client = Client()
+        client.uuid = "rank-token"
+        client.private_request = AsyncMock(
+            return_value={
+                "users": [{"pk": "1", "username": "one"}],
+                "next_max_id": "cursor-2",
+            }
+        )
+
+        users, cursor = await client.user_followers_v1_page(
+            "123",
+            max_id="cursor-1",
+            count=50,
+            order="date_followed_latest",
+        )
+
+        self.assertEqual([user.pk for user in users], ["1"])
+        self.assertEqual(cursor, "cursor-2")
+        client.private_request.assert_awaited_once_with(
+            "friendships/123/followers/",
+            params={
+                "count": 50,
+                "rank_token": "rank-token",
+                "search_surface": "follow_list_page",
+                "query": "",
+                "enable_groups": "true",
+                "order": "date_followed_latest",
+                "max_id": "cursor-1",
+            },
+        )
+
+    async def test_user_following_v1_page_rejects_oversized_page(self):
+        client = Client()
+
+        with self.assertRaises(ValueError):
+            await client.user_following_v1_page("123", count=MAX_USER_COUNT + 1)
 
     async def test_user_followers_v1_chunk_caps_count_to_max_user_count(self):
         client = Client()

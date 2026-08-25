@@ -62,11 +62,11 @@ class UserMixin(ClientMixin):
     Helpers to manage user
     """
 
-    _users_cache: Dict[str, User] = {}  # user_pk -> User
-    _userhorts_cache: Dict[str, UserShort] = {}  # user_pk -> UserShort
-    _usernames_cache: Dict[str, str] = {}  # username -> user_pk
-    _users_following: Dict[Any, Any] = {}  # user_pk -> dict(user_pk -> "short user object")
-    _users_followers: Dict[Any, Any] = {}  # user_pk -> dict(user_pk -> "short user object")
+    _users_cache: Dict[str, User]  # user_pk -> User
+    _userhorts_cache: Dict[str, UserShort]  # user_pk -> UserShort
+    _usernames_cache: Dict[str, str]  # username -> user_pk
+    _users_following: Dict[Any, Any]  # user_pk -> dict(user_pk -> "short user object")
+    _users_followers: Dict[Any, Any]  # user_pk -> dict(user_pk -> "short user object")
 
     @staticmethod
     def _normalize_username(username: str) -> str:
@@ -852,32 +852,53 @@ class UserMixin(ClientMixin):
         unique_set = set()
         users: List[UserShort] = []
         while True:
-            count = MAX_USER_COUNT
+            page_amount = MAX_USER_COUNT
             if max_amount:
-                count = min(max_amount - len(users), MAX_USER_COUNT)
-            params = {
-                "count": count,
-                "rank_token": self.rank_token,
-                "search_surface": "follow_list_page",
-                "query": "",
-                "enable_groups": "true",
-            }
-            if max_id:
-                params["max_id"] = max_id
-            result = await self.private_request(
-                f"friendships/{user_id}/following/",
-                params=params,
+                page_amount = min(max_amount - len(users), MAX_USER_COUNT)
+            page, max_id = await self.user_following_v1_page(
+                user_id,
+                max_id=max_id,
+                count=page_amount,
             )
-            for user in result["users"]:
-                user = extract_user_short(user)
+            for user in page:
                 if user.pk in unique_set:
                     continue
                 unique_set.add(user.pk)
                 users.append(user)
-            max_id = result.get("next_max_id")
             if not max_id or (max_amount and len(users) >= max_amount):
                 break
         return users, max_id
+
+    async def user_following_v1_page(
+        self,
+        user_id: str,
+        *,
+        max_id: str = "",
+        count: int = MAX_USER_COUNT,
+    ) -> Tuple[List[UserShort], str]:
+        """Fetch exactly one Private Mobile API page of followed users.
+
+        Unlike :meth:`user_following_v1_chunk`, this method never follows the
+        returned cursor. It is intended for durable workers that checkpoint
+        every upstream response before requesting another page.
+        """
+        if not 1 <= count <= MAX_USER_COUNT:
+            raise ValueError(f"count must be between 1 and {MAX_USER_COUNT}")
+        params = {
+            "count": count,
+            "rank_token": self.rank_token,
+            "search_surface": "follow_list_page",
+            "query": "",
+            "enable_groups": "true",
+        }
+        if max_id:
+            params["max_id"] = max_id
+        result = await self.private_request(
+            f"friendships/{user_id}/following/",
+            params=params,
+        )
+        users = [extract_user_short(user) for user in result.get("users", [])]
+        return users, str(result.get("next_max_id") or "")
 
     async def user_following_v1(self, user_id: str, amount: int = 0) -> List[UserShort]:
         """
@@ -1068,34 +1089,56 @@ class UserMixin(ClientMixin):
         unique_set = set()
         users: List[UserShort] = []
         while True:
-            count = MAX_USER_COUNT
+            page_amount = MAX_USER_COUNT
             if max_amount:
-                count = min(max_amount - len(users), MAX_USER_COUNT)
-            params = {
-                "count": count,
-                "rank_token": self.rank_token,
-                "search_surface": "follow_list_page",
-                "query": "",
-                "enable_groups": "true",
-            }
-            if order:
-                params["order"] = order
-            if max_id:
-                params["max_id"] = max_id
-            result = await self.private_request(
-                f"friendships/{user_id}/followers/",
-                params=params,
+                page_amount = min(max_amount - len(users), MAX_USER_COUNT)
+            page, max_id = await self.user_followers_v1_page(
+                user_id,
+                max_id=max_id,
+                count=page_amount,
+                order=order,
             )
-            for user in result["users"]:
-                user = extract_user_short(user)
+            for user in page:
                 if user.pk in unique_set:
                     continue
                 unique_set.add(user.pk)
                 users.append(user)
-            max_id = result.get("next_max_id")
             if not max_id or (max_amount and len(users) >= max_amount):
                 break
         return users, max_id
+
+    async def user_followers_v1_page(
+        self,
+        user_id: str,
+        *,
+        max_id: str = "",
+        count: int = MAX_USER_COUNT,
+        order: Optional[FOLLOWERS_ORDER] = None,
+    ) -> Tuple[List[UserShort], str]:
+        """Fetch exactly one Private Mobile API page of followers.
+
+        The next cursor is returned without being consumed so callers can
+        durably persist both the users and cursor as one checkpoint.
+        """
+        if not 1 <= count <= MAX_USER_COUNT:
+            raise ValueError(f"count must be between 1 and {MAX_USER_COUNT}")
+        params = {
+            "count": count,
+            "rank_token": self.rank_token,
+            "search_surface": "follow_list_page",
+            "query": "",
+            "enable_groups": "true",
+        }
+        if order:
+            params["order"] = order
+        if max_id:
+            params["max_id"] = max_id
+        result = await self.private_request(
+            f"friendships/{user_id}/followers/",
+            params=params,
+        )
+        users = [extract_user_short(user) for user in result.get("users", [])]
+        return users, str(result.get("next_max_id") or "")
 
     async def user_followers_v1(
         self,
