@@ -59,6 +59,22 @@ class AuthRegressionTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(client.authorization_data["sessionid"], "fresh")
         self.assertEqual(client.relogin_attempt, 0)
 
+    async def test_login_can_persist_authentication_before_optional_post_login_flow(self):
+        client = Client()
+        client.last_response = Mock(headers={"ig-set-authorization": "Bearer fresh"})
+        client.parse_authorization = Mock(return_value={"ds_user_id": "123", "sessionid": "fresh"})
+        client.pre_login_flow = AsyncMock(return_value=True)
+        client.password_encrypt = AsyncMock(return_value="enc-password")
+        client.private_request = AsyncMock(return_value=True)
+        client.login_flow = AsyncMock()
+
+        result = await client.login("example", "password", run_post_login_flow=False)
+
+        self.assertTrue(result)
+        client.login_flow.assert_not_awaited()
+        self.assertIsNotNone(client.last_login)
+        self.assertEqual(client.relogin_attempt, 0)
+
     async def test_login_does_not_mask_other_session_validation_errors(self):
         client = Client()
         client.authorization_data = {"ds_user_id": "123"}

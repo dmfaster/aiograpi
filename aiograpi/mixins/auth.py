@@ -731,6 +731,7 @@ class LoginMixin(PreLoginFlowMixin, PostLoginFlowMixin):
         password: Union[str, None] = None,
         relogin: bool = False,
         verification_code: str = "",
+        run_post_login_flow: bool = True,
     ) -> bool:
         """
         Login
@@ -745,6 +746,10 @@ class LoginMixin(PreLoginFlowMixin, PostLoginFlowMixin):
             Whether or not to re login, default False
         verification_code: str
             2FA verification code
+        run_post_login_flow: bool
+            Whether to emulate the mobile app's post-login feed warm-up, default True.
+            Set False when a caller needs to persist a newly authenticated session
+            before making optional feed requests.
 
         Returns
         -------
@@ -782,7 +787,11 @@ class LoginMixin(PreLoginFlowMixin, PostLoginFlowMixin):
             try:
                 await self.account_info()
             except LoginRequired:
-                return await self.login(relogin=True, verification_code=verification_code)
+                return await self.login(
+                    relogin=True,
+                    verification_code=verification_code,
+                    run_post_login_flow=run_post_login_flow,
+                )
             return True
         try:
             await self.pre_login_flow()
@@ -859,7 +868,8 @@ class LoginMixin(PreLoginFlowMixin, PostLoginFlowMixin):
                         self.last_response.headers.get("ig-set-authorization")
                     )
         if logged:
-            await self.login_flow()
+            if run_post_login_flow:
+                await self.login_flow()
             self.last_login = time.time()
             self.relogin_attempt = 0
             return True
