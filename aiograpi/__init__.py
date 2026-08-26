@@ -114,6 +114,13 @@ class Client(
         self.timezone_name = kwargs.pop("timezone_name", "")
         self.push_disabled = kwargs.pop("push_disabled", True)
         super().__init__(**kwargs)
+        # User caches contain account-scoped data and must never be shared by
+        # Client instances in a multi-account process.
+        self._users_cache = {}
+        self._userhorts_cache = {}
+        self._usernames_cache = {}
+        self._users_following = {}
+        self._users_followers = {}
         self.settings = deepcopy(settings or {})
         self.override_app_version = override_app_version
         self.logger = logger
@@ -133,3 +140,19 @@ class Client(
         )
         self.public.proxy = self.private.proxy = self.graphql.proxy = proxy_href
         return True
+
+    async def aclose(self) -> None:
+        """Close all HTTP transports owned by this client."""
+        closed = set()
+        for session in (self.public, self.private, self.graphql):
+            session_id = id(session)
+            if session_id in closed:
+                continue
+            closed.add(session_id)
+            await session._close()
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_args):
+        await self.aclose()

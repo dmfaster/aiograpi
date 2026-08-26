@@ -10,7 +10,7 @@ import time
 import uuid
 from copy import deepcopy
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Literal, Optional, Union
+from typing import Any, Awaitable, Callable, Dict, Iterable, List, Literal, Optional, Union
 from uuid import uuid4
 
 from pydantic import ValidationError
@@ -536,6 +536,22 @@ class LoginMixin(PreLoginFlowMixin, PostLoginFlowMixin):
             return "sms"
         return "totp"
 
+    def _legacy_two_factor_verification_method(self, data: Dict, verification_code: str = "") -> str:
+        challenge = self._infer_bloks_two_factor_challenge(data, verification_code)
+        return "1" if challenge == "sms" else "3"
+
+    async def _resolve_login_verification_code(
+        self,
+        verification_code: str,
+        verification_code_handler: Optional[Callable[[str], Awaitable[str]]],
+        login_json: Dict,
+    ) -> str:
+        normalized = str(verification_code or "").strip()
+        if normalized or verification_code_handler is None:
+            return normalized
+        challenge = self._infer_bloks_two_factor_challenge(login_json)
+        return str(await verification_code_handler(challenge) or "").strip()
+
     def _is_unavailable_caa_login_error(self, exc: ClientError) -> bool:
         response = getattr(exc, "response", None)
         status_code = getattr(response, "status_code", None) or getattr(exc, "code", None)
@@ -731,6 +747,8 @@ class LoginMixin(PreLoginFlowMixin, PostLoginFlowMixin):
         password: Union[str, None] = None,
         relogin: bool = False,
         verification_code: str = "",
+        run_post_login_flow: bool = True,
+        verification_code_handler: Optional[Callable[[str], Awaitable[str]]] = None,
     ) -> bool:
         """
         Login
@@ -745,6 +763,14 @@ class LoginMixin(PreLoginFlowMixin, PostLoginFlowMixin):
             Whether or not to re login, default False
         verification_code: str
             2FA verification code
+        run_post_login_flow: bool
+            Whether to emulate the mobile app's post-login feed warm-up, default True.
+            Set False when a caller needs to persist a newly authenticated session
+            before making optional feed requests.
+        verification_code_handler: callable, optional
+            Async callback invoked with ``sms`` or ``totp`` only after Instagram
+            returns a two-factor challenge. This lets SMS callers wait until the
+            login request has caused Instagram to send the code.
 
         Returns
         -------
@@ -782,7 +808,12 @@ class LoginMixin(PreLoginFlowMixin, PostLoginFlowMixin):
             try:
                 await self.account_info()
             except LoginRequired:
-                return await self.login(relogin=True, verification_code=verification_code)
+                return await self.login(
+                    relogin=True,
+                    verification_code=verification_code,
+                    run_post_login_flow=run_post_login_flow,
+                    verification_code_handler=verification_code_handler,
+                )
             return True
         try:
             await self.pre_login_flow()
@@ -816,18 +847,28 @@ class LoginMixin(PreLoginFlowMixin, PostLoginFlowMixin):
                     self.last_json = login_json
                     self.last_response = login_response
                     raise
-            elif not verification_code.strip():
-                raise TwoFactorRequired(
-                    f"{exc} (Instagram returned a Bloks two-factor context; provide verification_code for login)",
-                    response=getattr(exc, "response", None),
-                    **self._exception_context(login_json),
-                ) from exc
             else:
+                verification_code = await self._resolve_login_verification_code(
+                    verification_code,
+                    verification_code_handler,
+                    login_json,
+                )
+                if not verification_code:
+                    raise TwoFactorRequired(
+                        f"{exc} (Instagram returned a Bloks two-factor context; provide verification_code for login)",
+                        response=getattr(exc, "response", None),
+                        **self._exception_context(login_json),
+                    ) from exc
                 logged = await self._login_with_bloks_two_factor(verification_code, login_json, exc)
         except TwoFactorRequired as e:
-            if not verification_code.strip():
-                raise TwoFactorRequired(f"{e} (you did not provide verification_code for login method)")
             two_factor_json = deepcopy(self.last_json) if isinstance(self.last_json, dict) else {}
+            verification_code = await self._resolve_login_verification_code(
+                verification_code,
+                verification_code_handler,
+                two_factor_json,
+            )
+            if not verification_code:
+                raise TwoFactorRequired(f"{e} (you did not provide verification_code for login method)")
             if self._looks_like_backup_code(verification_code) and self._extract_two_step_verification_context(
                 two_factor_json
             ):
@@ -844,7 +885,10 @@ class LoginMixin(PreLoginFlowMixin, PostLoginFlowMixin):
                     "guid": self.uuid,
                     "device_id": self.android_device_id,
                     "waterfall_id": str(uuid4()),
-                    "verification_method": "3",
+                    "verification_method": self._legacy_two_factor_verification_method(
+                        two_factor_json,
+                        verification_code,
+                    ),
                 }
                 try:
                     logged = await self.private_request("accounts/two_factor_login/", data, login=True)
@@ -859,7 +903,8 @@ class LoginMixin(PreLoginFlowMixin, PostLoginFlowMixin):
                         self.last_response.headers.get("ig-set-authorization")
                     )
         if logged:
-            await self.login_flow()
+            if run_post_login_flow:
+                await self.login_flow()
             self.last_login = time.time()
             self.relogin_attempt = 0
             return True

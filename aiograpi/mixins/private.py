@@ -418,6 +418,7 @@ class PrivateRequestMixin(ClientMixin):
         headers=None,
         extra_sig=None,
         domain: str = None,
+        retry_without_cursor: bool = True,
     ):
         self.last_response = None
         self.last_json = last_json = {}  # for Sentry context in traceback
@@ -483,7 +484,12 @@ class PrivateRequestMixin(ClientMixin):
             self.request_log(response)
             self.last_response = response
             # hack for re-request without paging cursor if cursor is broken
-            if response.status_code == 500 and params and (params.get("min_id") or params.get("max_id")):
+            if (
+                retry_without_cursor
+                and response.status_code == 500
+                and params
+                and (params.get("min_id") or params.get("max_id"))
+            ):
                 params.pop("min_id", None)
                 params.pop("max_id", None)
                 self.logger.warning("Resend request without cursor %r (%r)", endpoint, params)
@@ -493,6 +499,10 @@ class PrivateRequestMixin(ClientMixin):
                     params=params,
                     login=login,
                     with_signature=False,
+                    headers=headers,
+                    extra_sig=extra_sig,
+                    domain=domain,
+                    retry_without_cursor=retry_without_cursor,
                 )
 
             response.raise_for_status()
@@ -738,6 +748,8 @@ class PrivateRequestMixin(ClientMixin):
         headers=None,
         extra_sig=None,
         domain: str = None,
+        retry_transient: bool = True,
+        retry_without_cursor: bool = True,
     ):
         # Hard guard: every private endpoint requires a logged-in
         # session (cookie + user_id). Without this, IG returns
@@ -765,6 +777,7 @@ class PrivateRequestMixin(ClientMixin):
             headers=headers,
             extra_sig=extra_sig,
             domain=domain,
+            retry_without_cursor=retry_without_cursor,
         )
         try:
             if self.delay_range:
@@ -772,21 +785,29 @@ class PrivateRequestMixin(ClientMixin):
             self.private_requests_count += 1
             await self._send_private_request(endpoint, **kwargs)
         except ClientRequestTimeout:
+            if not retry_transient:
+                raise
             self.logger.info("Wait 60 seconds and try one more time (ClientRequestTimeout)")
             await asyncio.sleep(60)
             return await self._send_private_request(endpoint, **kwargs)
         except ClientIncompleteReadError:
+            if not retry_transient:
+                raise
             self.logger.info("Wait 2 seconds and try one more time (ClientIncompleteReadError)")
             await asyncio.sleep(2)
             return await self._send_private_request(endpoint, **kwargs)
         # except BadPassword as e:
         #     raise e
         except Exception as e:
+            if not retry_transient and not retry_without_cursor:
+                raise
             if self.handle_exception:
                 self.handle_exception(self, e)
             elif isinstance(e, ChallengeRequired):
                 if self.with_challenge_flow:
                     await self.challenge_resolve(self.last_json)
+                else:
+                    raise
             else:
                 raise e
             if login and self.user_id:
