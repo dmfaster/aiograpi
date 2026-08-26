@@ -75,6 +75,68 @@ class AuthRegressionTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(client.last_login)
         self.assertEqual(client.relogin_attempt, 0)
 
+    async def test_login_requests_sms_code_after_challenge_and_uses_sms_method(self):
+        client = Client()
+        client.username = "example"
+        client.password = "password"
+        client.authorization_data = {}
+        client.uuid = "uuid-1"
+        client.phone_id = "phone-1"
+        client.android_device_id = "android-1"
+        client._token = "csrftoken"
+        client.pre_login_flow = AsyncMock(return_value=True)
+        client.password_encrypt = AsyncMock(return_value="enc-password")
+        client.parse_authorization = Mock(return_value={"ds_user_id": "123", "sessionid": "fresh"})
+        client.login_flow = AsyncMock()
+        endpoints = []
+
+        async def private_request(endpoint, data, login=False):
+            endpoints.append(endpoint)
+            if endpoint == "accounts/login/":
+                client.last_json = {
+                    "two_factor_info": {
+                        "two_factor_identifier": "two-factor-id",
+                        "sms_two_factor_on": True,
+                        "totp_two_factor_on": False,
+                    }
+                }
+                client.last_response = Mock(status_code=400, headers={})
+                raise TwoFactorRequired("Two-factor authentication required", response=client.last_response)
+            client.last_response = Mock(headers={"ig-set-authorization": "Bearer fresh"})
+            return True
+
+        async def verification_code_handler(challenge):
+            self.assertEqual(endpoints, ["accounts/login/"])
+            self.assertEqual(challenge, "sms")
+            return "654321"
+
+        client.private_request = AsyncMock(side_effect=private_request)
+
+        result = await client.login(
+            verification_code_handler=verification_code_handler,
+            run_post_login_flow=False,
+        )
+
+        self.assertTrue(result)
+        self.assertEqual(endpoints, ["accounts/login/", "accounts/two_factor_login/"])
+        payload = client.private_request.call_args_list[1].args[1]
+        self.assertEqual(payload["verification_code"], "654321")
+        self.assertEqual(payload["verification_method"], "1")
+        self.assertEqual(payload["two_factor_identifier"], "two-factor-id")
+        client.login_flow.assert_not_awaited()
+
+    def test_legacy_two_factor_method_defaults_to_totp_unless_sms_only(self):
+        client = Client()
+
+        self.assertEqual(
+            client._legacy_two_factor_verification_method({"sms_two_factor_on": True, "totp_two_factor_on": False}),
+            "1",
+        )
+        self.assertEqual(
+            client._legacy_two_factor_verification_method({"sms_two_factor_on": True, "totp_two_factor_on": True}),
+            "3",
+        )
+
     async def test_login_does_not_mask_other_session_validation_errors(self):
         client = Client()
         client.authorization_data = {"ds_user_id": "123"}
