@@ -679,6 +679,110 @@ class UserMixinRegressionTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertIs(page.has_more, True)
         self.assertEqual(page.route, "private_graphql")
 
+    async def test_user_followers_private_gql_page_result_records_safe_limit_signals(self):
+        client = Client()
+        client.uuid = "rank-token"
+        client.private_graphql_followers_list = AsyncMock(
+            return_value={
+                "data": {
+                    "xdt_api__v1__friendships__followers": {
+                        "users": [{"pk": "42", "username": "follower"}],
+                        "page_size": "50",
+                        "big_list": True,
+                        "should_limit_list_of_followers": False,
+                    }
+                }
+            }
+        )
+
+        page = await client.user_followers_private_gql_page_result(
+            "123",
+            max_id=50,
+            client_doc_id="fresh-doc-id",
+            query_profile="pagination_metadata",
+        )
+
+        self.assertEqual(page.page_size, 50)
+        self.assertIs(page.big_list, True)
+        self.assertIs(page.should_limit_list_of_followers, False)
+        client.private_graphql_followers_list.assert_awaited_once_with(
+            "123",
+            "rank-token",
+            max_id=50,
+            order=None,
+            priority="u=3, i",
+            client_doc_id="fresh-doc-id",
+            query_profile="pagination_metadata",
+        )
+
+    async def test_private_graphql_followers_pagination_metadata_profile_requests_metadata(self):
+        client = Client()
+        captured = {}
+
+        async def fake_request(**kwargs):
+            captured.update(kwargs)
+            return {"data": {}}
+
+        client.private_graphql_query_request = fake_request
+
+        await client.private_graphql_followers_list(
+            "123",
+            "rank-token",
+            max_id=50,
+            order="date_followed_latest",
+            query_profile="pagination_metadata",
+        )
+
+        variables = captured["variables"]
+        self.assertEqual(variables["max_id"], 50)
+        self.assertEqual(variables["order"], "date_followed_latest")
+        self.assertIs(variables["skip_page_size"], False)
+        self.assertIs(variables["skip_has_more"], False)
+        self.assertIs(variables["skip_big_list"], False)
+
+    async def test_private_graphql_followers_legacy_sparse_profile_is_exact_and_bounded(self):
+        client = Client()
+        captured = {}
+
+        async def fake_request(**kwargs):
+            captured.update(kwargs)
+            return {"data": {}}
+
+        client.private_graphql_query_request = fake_request
+
+        await client.private_graphql_followers_list(
+            "123",
+            "rank-token",
+            max_id=100,
+            query_profile="legacy_sparse",
+        )
+
+        self.assertEqual(
+            captured["variables"],
+            {
+                "include_unseen_count": False,
+                "query": "",
+                "include_biography": False,
+                "user_id": "123",
+                "request_data": {"rank_token": "rank-token", "enableGroups": True},
+                "search_surface": "follow_list_page",
+                "max_id": 100,
+            },
+        )
+
+    async def test_private_graphql_followers_rejects_unknown_query_profile(self):
+        client = Client()
+        client.private_graphql_query_request = AsyncMock(return_value={"data": {}})
+
+        with self.assertRaisesRegex(ValueError, "unsupported follow-list query profile"):
+            await client.private_graphql_followers_list(
+                "123",
+                "rank-token",
+                query_profile="unsafe-profile",
+            )
+
+        client.private_graphql_query_request.assert_not_awaited()
+
     async def test_user_followers_private_gql_raises_on_missing_payload(self):
         client = Client()
         client.uuid = "rank-token"

@@ -94,6 +94,26 @@ users = await cl.user_followers_private_gql(
     order="date_followed_latest",
 )
 
+# Durable clients can request the document's non-sensitive pagination fields
+# and inspect one page without automatically following a cursor. Instagram may
+# still omit or null these fields, so never invent a continuation token.
+page = await cl.user_followers_private_gql_page_result(
+    user_id="25025320",
+    max_id=50,
+    rank_token=rank_token,
+    query_profile="pagination_metadata",
+)
+print(page.page_size, page.has_more, bool(page.next_cursor))
+
+# ``legacy_sparse`` reproduces the older captured variable envelope for a
+# bounded compatibility experiment. It is not an automatic fallback: callers
+# must cap attempts, serialize one account, and stop on any safety response.
+legacy_page = await cl.user_followers_private_gql_page_result(
+    user_id="25025320",
+    rank_token=rank_token,
+    query_profile="legacy_sparse",
+)
+
 # Search typeahead
 hits = await cl.fbsearch_keyword_typeahead("python")
 for hit in hits["list"]:
