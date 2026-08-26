@@ -1,5 +1,6 @@
 import json
 import unittest
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 from aiograpi import Client
@@ -455,6 +456,44 @@ class UserMixinRegressionTestCase(unittest.IsolatedAsyncioTestCase):
             retry_without_cursor=False,
         )
 
+    async def test_user_followers_v1_page_result_accepts_max_id_and_records_safe_shape(self):
+        client = Client()
+        client.uuid = "rank-token"
+        client.last_response = SimpleNamespace(status_code=200, content=b"safe-count-only")
+        client.private_request = AsyncMock(
+            return_value={
+                "users": [{"pk": "1", "username": "one"}],
+                "max_id": "cursor-2",
+                "has_more": True,
+                "status": "ok",
+                "123456789": "dynamic-key-is-not-shape-metadata",
+            }
+        )
+
+        page = await client.user_followers_v1_page_result("123", count=100)
+
+        self.assertEqual(page.next_cursor, "cursor-2")
+        self.assertEqual(page.cursor_field, "max_id")
+        self.assertIs(page.has_more, True)
+        self.assertEqual(page.raw_user_count, 1)
+        self.assertEqual(page.http_status, 200)
+        self.assertEqual(page.response_bytes, 15)
+        self.assertEqual(page.response_keys, ("has_more", "max_id", "status", "users"))
+        self.assertNotIn("cursor-2", page.response_keys)
+
+    async def test_user_followers_v1_page_result_treats_zero_cursor_as_exhaustion(self):
+        client = Client()
+        client.uuid = "rank-token"
+        client.private_request = AsyncMock(
+            return_value={"users": [], "next_max_id": "0", "has_more": False}
+        )
+
+        page = await client.user_followers_v1_page_result("123", count=100)
+
+        self.assertEqual(page.next_cursor, "")
+        self.assertEqual(page.cursor_field, "")
+        self.assertIs(page.has_more, False)
+
     async def test_user_following_v1_page_rejects_oversized_page(self):
         client = Client()
 
@@ -612,6 +651,33 @@ class UserMixinRegressionTestCase(unittest.IsolatedAsyncioTestCase):
             order="date_followed_latest",
             priority="u=3, i",
         )
+
+    async def test_user_followers_private_gql_page_result_accepts_nested_page_info(self):
+        client = Client()
+        client.uuid = "rank-token"
+        client.private_graphql_followers_list = AsyncMock(
+            return_value={
+                "data": {
+                    "xdt_api__v1__friendships__followers": {
+                        "edges": [
+                            {"node": {"pk": "42", "username": "follower"}},
+                        ],
+                        "page_info": {
+                            "end_cursor": "graphql-cursor",
+                            "has_next_page": True,
+                        },
+                    }
+                }
+            }
+        )
+
+        page = await client.user_followers_private_gql_page_result("123")
+
+        self.assertEqual([user.pk for user in page.users], ["42"])
+        self.assertEqual(page.next_cursor, "graphql-cursor")
+        self.assertEqual(page.cursor_field, "page_info.end_cursor")
+        self.assertIs(page.has_more, True)
+        self.assertEqual(page.route, "private_graphql")
 
     async def test_user_followers_private_gql_raises_on_missing_payload(self):
         client = Client()

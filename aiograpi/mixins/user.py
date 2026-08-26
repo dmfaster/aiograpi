@@ -28,6 +28,13 @@ from aiograpi.extractors import (
     extract_user_v1,
 )
 from aiograpi.mixins.base import ClientMixin
+from aiograpi.pagination import (
+    UserListPage,
+    normalize_collection_cursor,
+    normalize_collection_has_more,
+    response_observability,
+    safe_mapping_keys,
+)
 from aiograpi.types import (
     About,
     AddressBookContact,
@@ -904,6 +911,21 @@ class UserMixin(ClientMixin):
         returned cursor. It is intended for durable workers that checkpoint
         every upstream response before requesting another page.
         """
+        page = await self.user_following_v1_page_result(
+            user_id,
+            max_id=max_id,
+            count=count,
+        )
+        return page.users, page.next_cursor
+
+    async def user_following_v1_page_result(
+        self,
+        user_id: str,
+        *,
+        max_id: str = "",
+        count: int = MAX_USER_COUNT,
+    ) -> UserListPage:
+        """Fetch one followed-users page with lossless pagination metadata."""
         if not 1 <= count <= MAX_USER_COUNT:
             raise ValueError(f"count must be between 1 and {MAX_USER_COUNT}")
         params = {
@@ -921,8 +943,22 @@ class UserMixin(ClientMixin):
             retry_transient=False,
             retry_without_cursor=False,
         )
-        users = [extract_user_short(user) for user in result.get("users", [])]
-        return users, str(result.get("next_max_id") or "")
+        raw_users = result.get("users") if isinstance(result.get("users"), list) else []
+        users = [extract_user_short(user) for user in raw_users]
+        next_cursor, cursor_field = normalize_collection_cursor(result)
+        http_status, response_bytes = response_observability(self.last_response)
+        return UserListPage(
+            users=users,
+            next_cursor=next_cursor,
+            cursor_field=cursor_field,
+            has_more=normalize_collection_has_more(result, next_cursor=next_cursor),
+            route="private_v1",
+            response_keys=safe_mapping_keys(result),
+            root_keys=safe_mapping_keys(result),
+            raw_user_count=len(raw_users),
+            http_status=http_status,
+            response_bytes=response_bytes,
+        )
 
     async def user_following_v1(self, user_id: str, amount: int = 0) -> List[UserShort]:
         """
@@ -1144,6 +1180,23 @@ class UserMixin(ClientMixin):
         The next cursor is returned without being consumed so callers can
         durably persist both the users and cursor as one checkpoint.
         """
+        page = await self.user_followers_v1_page_result(
+            user_id,
+            max_id=max_id,
+            count=count,
+            order=order,
+        )
+        return page.users, page.next_cursor
+
+    async def user_followers_v1_page_result(
+        self,
+        user_id: str,
+        *,
+        max_id: str = "",
+        count: int = MAX_USER_COUNT,
+        order: Optional[FOLLOWERS_ORDER] = None,
+    ) -> UserListPage:
+        """Fetch one followers page with lossless pagination metadata."""
         if not 1 <= count <= MAX_USER_COUNT:
             raise ValueError(f"count must be between 1 and {MAX_USER_COUNT}")
         params = {
@@ -1163,8 +1216,22 @@ class UserMixin(ClientMixin):
             retry_transient=False,
             retry_without_cursor=False,
         )
-        users = [extract_user_short(user) for user in result.get("users", [])]
-        return users, str(result.get("next_max_id") or "")
+        raw_users = result.get("users") if isinstance(result.get("users"), list) else []
+        users = [extract_user_short(user) for user in raw_users]
+        next_cursor, cursor_field = normalize_collection_cursor(result)
+        http_status, response_bytes = response_observability(self.last_response)
+        return UserListPage(
+            users=users,
+            next_cursor=next_cursor,
+            cursor_field=cursor_field,
+            has_more=normalize_collection_has_more(result, next_cursor=next_cursor),
+            route="private_v1",
+            response_keys=safe_mapping_keys(result),
+            root_keys=safe_mapping_keys(result),
+            raw_user_count=len(raw_users),
+            http_status=http_status,
+            response_bytes=response_bytes,
+        )
 
     async def user_followers_v1(
         self,
@@ -1279,6 +1346,26 @@ class UserMixin(ClientMixin):
         Tuple[List[UserShort], str]
             List of users and next max_id cursor
         """
+        page = await self.user_followers_private_gql_page_result(
+            user_id,
+            max_id=max_id,
+            rank_token=rank_token,
+            order=order,
+            priority=priority,
+        )
+        users = page.users[:max_amount] if max_amount else page.users
+        return users, page.next_cursor or None
+
+    async def user_followers_private_gql_page_result(
+        self,
+        user_id: str,
+        *,
+        max_id: Optional[Union[str, int]] = None,
+        rank_token: Optional[str] = None,
+        order: Optional[FOLLOWERS_ORDER] = None,
+        priority: str = "u=3, i",
+    ) -> UserListPage:
+        """Fetch one private GraphQL followers page with safe shape metadata."""
         user_id = str(user_id)
         result = await self.private_graphql_followers_list(
             user_id,
@@ -1290,12 +1377,75 @@ class UserMixin(ClientMixin):
         followers = self._private_graphql_root(result, "xdt_api__v1__friendships__followers")
         if not followers:
             raise ClientGraphqlError("Missing private GraphQL followers payload")
-        users: List[UserShort] = []
-        for user in followers.get("users") or []:
-            users.append(extract_user_short(user))
-            if max_amount and len(users) >= max_amount:
-                break
-        return users, followers.get("next_max_id")
+        raw_users = self._private_graphql_users(followers)
+        users = [extract_user_short(user) for user in raw_users]
+        next_cursor, cursor_field = normalize_collection_cursor(followers)
+        http_status, response_bytes = response_observability(self.last_response)
+        return UserListPage(
+            users=users,
+            next_cursor=next_cursor,
+            cursor_field=cursor_field,
+            has_more=normalize_collection_has_more(followers, next_cursor=next_cursor),
+            route="private_graphql",
+            response_keys=safe_mapping_keys(result.get("data") or result),
+            root_keys=safe_mapping_keys(followers),
+            raw_user_count=len(raw_users),
+            http_status=http_status,
+            response_bytes=response_bytes,
+        )
+
+    async def user_following_private_gql_page_result(
+        self,
+        user_id: str,
+        *,
+        max_id: Optional[Union[str, int]] = None,
+        rank_token: Optional[str] = None,
+        order: Optional[FOLLOWERS_ORDER] = None,
+        priority: str = "u=3, i",
+    ) -> UserListPage:
+        """Fetch one private GraphQL following page with safe shape metadata."""
+        user_id = str(user_id)
+        result = await self.private_graphql_following_list(
+            user_id,
+            rank_token or self.rank_token,
+            max_id=max_id,
+            order=order,
+            priority=priority,
+        )
+        following = self._private_graphql_root(result, "xdt_api__v1__friendships__following")
+        if not following:
+            raise ClientGraphqlError("Missing private GraphQL following payload")
+        raw_users = self._private_graphql_users(following)
+        users = [extract_user_short(user) for user in raw_users]
+        next_cursor, cursor_field = normalize_collection_cursor(following)
+        http_status, response_bytes = response_observability(self.last_response)
+        return UserListPage(
+            users=users,
+            next_cursor=next_cursor,
+            cursor_field=cursor_field,
+            has_more=normalize_collection_has_more(following, next_cursor=next_cursor),
+            route="private_graphql",
+            response_keys=safe_mapping_keys(result.get("data") or result),
+            root_keys=safe_mapping_keys(following),
+            raw_user_count=len(raw_users),
+            http_status=http_status,
+            response_bytes=response_bytes,
+        )
+
+    @staticmethod
+    def _private_graphql_users(root: Dict) -> List[Dict]:
+        users = root.get("users")
+        if isinstance(users, list):
+            return [user for user in users if isinstance(user, dict)]
+        edges = root.get("edges")
+        if not isinstance(edges, list):
+            return []
+        nodes: List[Dict] = []
+        for edge in edges:
+            node = edge.get("node") if isinstance(edge, dict) else None
+            if isinstance(node, dict):
+                nodes.append(node)
+        return nodes
 
     async def user_followers_private_gql(
         self,
