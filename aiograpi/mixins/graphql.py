@@ -527,9 +527,10 @@ class GraphQLRequestMixin(ClientMixin):
         merged.update(headers)
         if self.authorization:
             merged.setdefault("Authorization", self.authorization)
-        # Clear last_json BEFORE the request so callers inspecting it on
-        # exception don't see stale data from the previous successful call
-        # (private.py:339 does the same).
+        # Clear both response slots BEFORE the request so callers inspecting
+        # an exception never attribute the previous successful response to a
+        # transport failure (private.py does the same for every request).
+        self.last_response = None
         self.last_json = {}
         response = await self.private.post(
             PRIVATE_GRAPHQL_QUERY_URL,
