@@ -1287,6 +1287,7 @@ class UserMixin(ClientMixin):
         data = await self.public_graphql_request(
             variables,
             query_hash=normalized_query_hash,
+            retries_count=1,
         )
         user = data.get("user") if isinstance(data, dict) else None
         if user is None:
