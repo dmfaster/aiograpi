@@ -367,6 +367,7 @@ class PublicRequestMixin(ClientMixin):
         data=None,
         params=None,
         headers=None,
+        retries_count=None,
     ):
         assert query_id or query_hash, "Must provide valid one of: query_id, query_hash"
         default_params = {"variables": json.dumps(variables, separators=(",", ":"))}
@@ -386,6 +387,7 @@ class PublicRequestMixin(ClientMixin):
                 params=params,
                 headers=headers,
                 return_json=True,
+                retries_count=retries_count,
             )
 
             if body_json.get("status", None) != "ok":

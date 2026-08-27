@@ -551,6 +551,7 @@ class UserMixinRegressionTestCase(unittest.IsolatedAsyncioTestCase):
                 "after": "previous-opaque-cursor",
             },
             query_hash=PUBLIC_FOLLOWERS_QUERY_HASH,
+            retries_count=1,
         )
 
     async def test_user_followers_gql_page_result_does_not_emit_exhausted_cursor(self):
@@ -628,6 +629,7 @@ class UserMixinRegressionTestCase(unittest.IsolatedAsyncioTestCase):
                 "first": 24,
             },
             query_hash=PUBLIC_FOLLOWING_QUERY_HASH,
+            retries_count=1,
         )
 
     async def test_user_following_v1_page_rejects_oversized_page(self):
