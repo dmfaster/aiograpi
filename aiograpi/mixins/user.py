@@ -1017,6 +1017,7 @@ class UserMixin(ClientMixin):
             Tuple of List of users and max_id
         """
         unique_set = set()
+        seen_cursors = {str(max_id or "")}
         users: List[UserShort] = []
         while True:
             page_amount = MAX_USER_COUNT
@@ -1034,6 +1035,10 @@ class UserMixin(ClientMixin):
                 users.append(user)
             if not max_id or (max_amount and len(users) >= max_amount):
                 break
+            normalized_cursor = str(max_id)
+            if normalized_cursor in seen_cursors:
+                raise ClientError("Private following cursor repeated")
+            seen_cursors.add(normalized_cursor)
         return users, max_id
 
     async def user_following_v1_page(
@@ -1475,6 +1480,7 @@ class UserMixin(ClientMixin):
             Tuple of List of users and max_id
         """
         unique_set = set()
+        seen_cursors = {str(max_id or "")}
         users: List[UserShort] = []
         while True:
             page_amount = MAX_USER_COUNT
@@ -1493,6 +1499,10 @@ class UserMixin(ClientMixin):
                 users.append(user)
             if not max_id or (max_amount and len(users) >= max_amount):
                 break
+            normalized_cursor = str(max_id)
+            if normalized_cursor in seen_cursors:
+                raise ClientError("Private followers cursor repeated")
+            seen_cursors.add(normalized_cursor)
         return users, max_id
 
     async def user_followers_v1_page(
@@ -1847,6 +1857,8 @@ class UserMixin(ClientMixin):
             List of objects of UserShort type
         """
         users: List[UserShort] = []
+        unique_ids: set[str] = set()
+        seen_cursors = {""}
         max_id: Optional[Union[str, int]] = None
         while True:
             chunk_amount = max(amount - len(users), 0) if amount else 0
@@ -1860,11 +1872,20 @@ class UserMixin(ClientMixin):
                 client_doc_id=client_doc_id,
                 query_profile=query_profile,
             )
-            users.extend(chunk)
+            for user in chunk:
+                normalized_user_id = str(user.pk)
+                if normalized_user_id in unique_ids:
+                    continue
+                unique_ids.add(normalized_user_id)
+                users.append(user)
             if amount and len(users) >= amount:
                 break
             if not max_id or not chunk:
                 break
+            normalized_cursor = str(max_id)
+            if normalized_cursor in seen_cursors:
+                raise ClientGraphqlError("Private GraphQL followers cursor repeated")
+            seen_cursors.add(normalized_cursor)
         if amount:
             users = users[:amount]
         return users

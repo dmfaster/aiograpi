@@ -532,27 +532,42 @@ class GraphQLRequestMixin(ClientMixin):
         # transport failure (private.py does the same for every request).
         self.last_response = None
         self.last_json = {}
-        response = await self.private.post(
-            PRIVATE_GRAPHQL_QUERY_URL,
-            data=data,
-            headers=merged,
-            timeout=self.read_timeout,
-        )
-        self.last_response = response
+        response = None
         try:
+            # This path deliberately performs exactly one provider attempt.
+            # Durable callers own pacing, retries, and checkpointing, but the
+            # attempt must still participate in aiograpi's request accounting
+            # and safe request log just like every other private request.
+            self.private_requests_count += 1
+            response = await self.private.post(
+                PRIVATE_GRAPHQL_QUERY_URL,
+                data=data,
+                headers=merged,
+                timeout=self.read_timeout,
+            )
+            self.request_log(response)
+            self.last_response = response
             response.raise_for_status()
-        except httpx_ext.HTTPError as e:
-            self._raise_graphql_http_error(e, response)
-        try:
-            body = response.json()
-        except orjson.JSONDecodeError:
-            # Streamed line-delimited JSON envelope (similar to
-            # _send_private_request fallback for stream endpoints).
-            text = response.text.strip()
-            rows = [orjson.loads(item if item.endswith('"}') else f'{item}"}}') for item in text.split('"}\n') if item]
-            body = {"stream_rows": rows}
-        self.last_json = body
-        return body
+            self.last_json = self._json_from_graphql_response(response)
+        except orjson.JSONDecodeError as exc:
+            url = response.url if response else PRIVATE_GRAPHQL_QUERY_URL
+            raise ClientJSONDecodeError(
+                "JSONDecodeError {0!s} while opening {1!s}".format(exc, url),
+                response=response,
+            )
+        except (httpx_ext.ConnectError, httpx_ext.ReadError) as exc:
+            raise ClientConnectionError("{} {}".format(exc.__class__.__name__, str(exc)))
+        except httpx_ext.HTTPError as exc:
+            self._raise_graphql_http_error(exc, response)
+        finally:
+            # A later standard private request must see this attempt even when
+            # transport or decoding fails, preventing an immediate burst after
+            # a failed GraphQL call.
+            self.last_response_ts = time.time()
+        # Keep GraphQL error envelopes intact here. Follow-list page callers
+        # intentionally inspect partial data plus the top-level errors as one
+        # atomic response and decide whether to fail closed or retain metrics.
+        return self.last_json
 
     async def private_graphql_memories_pog(
         self,

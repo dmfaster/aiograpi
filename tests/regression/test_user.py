@@ -821,6 +821,34 @@ class UserMixinRegressionTestCase(unittest.IsolatedAsyncioTestCase):
         client.private_request.assert_awaited_once()
         self.assertEqual(client.private_request.call_args.kwargs["params"]["count"], MAX_USER_COUNT)
 
+    async def test_user_followers_v1_chunk_stops_on_repeated_cursor(self):
+        client = Client()
+        client.user_followers_v1_page = AsyncMock(
+            side_effect=[
+                ([UserShort(pk="1", username="one")], "repeated-cursor"),
+                ([UserShort(pk="2", username="two")], "repeated-cursor"),
+            ]
+        )
+
+        with self.assertRaisesRegex(ClientError, "Private followers cursor repeated"):
+            await client.user_followers_v1_chunk("123")
+
+        self.assertEqual(client.user_followers_v1_page.await_count, 2)
+
+    async def test_user_following_v1_chunk_stops_on_repeated_cursor(self):
+        client = Client()
+        client.user_following_v1_page = AsyncMock(
+            side_effect=[
+                ([UserShort(pk="1", username="one")], "repeated-cursor"),
+                ([UserShort(pk="2", username="two")], "repeated-cursor"),
+            ]
+        )
+
+        with self.assertRaisesRegex(ClientError, "Private following cursor repeated"):
+            await client.user_following_v1_chunk("123")
+
+        self.assertEqual(client.user_following_v1_page.await_count, 2)
+
     async def test_iter_user_followers_v1_streams_chunks_and_respects_amount(self):
         client = self._build_private_client()
         users = [
@@ -952,6 +980,47 @@ class UserMixinRegressionTestCase(unittest.IsolatedAsyncioTestCase):
             order="date_followed_latest",
             priority="u=3, i",
         )
+
+    async def test_user_followers_private_gql_deduplicates_across_pages(self):
+        client = Client()
+        client.user_followers_private_gql_chunk = AsyncMock(
+            side_effect=[
+                (
+                    [
+                        UserShort(pk="1", username="one"),
+                        UserShort(pk="2", username="two"),
+                    ],
+                    "cursor-1",
+                ),
+                (
+                    [
+                        UserShort(pk="2", username="two"),
+                        UserShort(pk="3", username="three"),
+                    ],
+                    "cursor-2",
+                ),
+            ]
+        )
+
+        users = await client.user_followers_private_gql("123", amount=3)
+
+        self.assertEqual([user.pk for user in users], ["1", "2", "3"])
+        self.assertEqual(client.user_followers_private_gql_chunk.await_count, 2)
+        self.assertEqual(client.user_followers_private_gql_chunk.await_args_list[1].kwargs["max_id"], "cursor-1")
+
+    async def test_user_followers_private_gql_stops_on_repeated_cursor(self):
+        client = Client()
+        client.user_followers_private_gql_chunk = AsyncMock(
+            side_effect=[
+                ([UserShort(pk="1", username="one")], "repeated-cursor"),
+                ([UserShort(pk="2", username="two")], "repeated-cursor"),
+            ]
+        )
+
+        with self.assertRaisesRegex(ClientGraphqlError, "Private GraphQL followers cursor repeated"):
+            await client.user_followers_private_gql("123")
+
+        self.assertEqual(client.user_followers_private_gql_chunk.await_count, 2)
 
     async def test_user_followers_private_gql_page_result_accepts_nested_page_info(self):
         client = Client()
