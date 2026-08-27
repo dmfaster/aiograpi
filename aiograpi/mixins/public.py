@@ -33,7 +33,7 @@ from aiograpi.utils.timing import random_delay
 
 PublicTransport = Literal["requests", "curl"]
 PUBLIC_WEB_APP_ID = "936619743392459"
-PUBLIC_WEB_ASBD_ID = "129477"
+PUBLIC_WEB_ASBD_ID = "359341"
 
 
 class PublicRequestMixin(ClientMixin):
@@ -492,7 +492,17 @@ class PublicRequestMixin(ClientMixin):
         inject_sessionid = getattr(self, "inject_sessionid_to_public", None)
         if inject_sessionid:
             inject_sessionid()
-        query_url = url or self.GRAPHQL_PUBLIC_API_URL
+        if web_headers:
+            actor_id = str(self.public.cookies_dict().get("ds_user_id") or "").strip()
+            if actor_id.isdigit():
+                data["av"] = actor_id
+        # RelayModern persisted operations are served by Instagram's web
+        # GraphQL endpoint.  The legacy ``/graphql/query/`` endpoint still
+        # backs query-hash and older doc-id callers, so only select the modern
+        # route when the caller explicitly requests a browser envelope.
+        query_url = url or (
+            self.GRAPHQL_PUBLIC_WEB_API_URL if include_lsd or web_headers else self.GRAPHQL_PUBLIC_API_URL
+        )
         referer_url = referer or "https://www.instagram.com/"
         lsd = None
         if include_lsd:

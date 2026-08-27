@@ -631,7 +631,79 @@ class UserMixinRegressionTestCase(unittest.IsolatedAsyncioTestCase):
             retries_count=1,
             friendly_name=PUBLIC_WEB_FOLLOWERS_FRIENDLY_NAME,
             web_headers=True,
+            headers={"X-Root-Field-Name": PUBLIC_WEB_FOLLOWERS_CONNECTION},
         )
+
+    async def test_user_followers_web_gql_page_result_serializes_exact_http_request_without_network(self):
+        client = Client()
+        client.last_response_ts = 0
+        client.authorization_data = {"sessionid": "123:session", "ds_user_id": "123"}
+        client.private.set_cookies({"csrftoken": "private-csrf-token"})
+        client.public.get = AsyncMock(side_effect=AssertionError("web GraphQL must not bootstrap with a GET"))
+
+        response_body = {
+            "data": {
+                PUBLIC_WEB_FOLLOWERS_CONNECTION: {
+                    "edges": [{"node": {"id": "1", "username": "one"}}],
+                    "page_info": {
+                        "has_next_page": True,
+                        "end_cursor": "opaque-web-relay-cursor",
+                    },
+                    "should_limit_list_of_followers": False,
+                }
+            }
+        }
+        response = Mock()
+        response.status_code = 200
+        response.url = client.GRAPHQL_PUBLIC_WEB_API_URL
+        response.content = b'{"data":{"xdt_api__v1__friendships__followers__connection":{}}}'
+        response.json.return_value = response_body
+        response.raise_for_status.return_value = None
+        client.public.post = AsyncMock(return_value=response)
+
+        page = await client.user_followers_web_gql_page_result(
+            "456",
+            end_cursor="previous-web-cursor",
+            count=50,
+        )
+
+        self.assertEqual([user.pk for user in page.users], ["1"])
+        self.assertEqual(page.next_cursor, "opaque-web-relay-cursor")
+        client.public.get.assert_not_awaited()
+        client.public.post.assert_awaited_once()
+        request = client.public.post.await_args
+        self.assertEqual(request.args[0], client.GRAPHQL_PUBLIC_WEB_API_URL)
+        self.assertIsNone(request.kwargs["params"])
+        self.assertEqual(
+            json.loads(request.kwargs["data"]["variables"]),
+            {
+                "after": "previous-web-cursor",
+                "before": None,
+                "count": 50,
+                "first": 50,
+                "isFollowerList": True,
+                "last": None,
+                "query": "",
+                "userID": "456",
+            },
+        )
+        self.assertEqual(request.kwargs["data"]["doc_id"], PUBLIC_WEB_FOLLOWERS_DOC_ID)
+        self.assertEqual(request.kwargs["data"]["av"], "123")
+        self.assertEqual(request.kwargs["data"]["fb_api_caller_class"], "RelayModern")
+        self.assertEqual(
+            request.kwargs["data"]["fb_api_req_friendly_name"],
+            PUBLIC_WEB_FOLLOWERS_FRIENDLY_NAME,
+        )
+        headers = request.kwargs["headers"]
+        self.assertEqual(headers["X-ASBD-ID"], "359341")
+        self.assertEqual(headers["X-IG-App-ID"], "936619743392459")
+        self.assertEqual(headers["X-CSRFToken"], "private-csrf-token")
+        self.assertEqual(headers["X-FB-Friendly-Name"], PUBLIC_WEB_FOLLOWERS_FRIENDLY_NAME)
+        self.assertEqual(headers["X-Root-Field-Name"], PUBLIC_WEB_FOLLOWERS_CONNECTION)
+        self.assertEqual(client.public.cookies_dict()["sessionid"], "123:session")
+        self.assertEqual(client.public.cookies_dict()["ds_user_id"], "123")
+        self.assertNotIn("X-FB-Friendly-Name", client.public.headers)
+        self.assertNotIn("X-Root-Field-Name", client.public.headers)
 
     async def test_user_followers_web_gql_page_result_rejects_untrusted_doc_id_before_network(self):
         client = Client()
