@@ -631,6 +631,7 @@ class UserMixinRegressionTestCase(unittest.IsolatedAsyncioTestCase):
             retries_count=1,
             friendly_name=PUBLIC_WEB_FOLLOWERS_FRIENDLY_NAME,
             web_headers=True,
+            headers={"X-Root-Field-Name": PUBLIC_WEB_FOLLOWERS_CONNECTION},
         )
 
     async def test_user_followers_web_gql_page_result_rejects_untrusted_doc_id_before_network(self):

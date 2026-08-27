@@ -63,6 +63,10 @@ class PublicRequestRegressionTestCase(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result, {"ok": True})
         client.public_request.assert_awaited_once()
+        self.assertEqual(
+            client.public_request.await_args.args[0],
+            client.GRAPHQL_PUBLIC_WEB_API_URL,
+        )
         kwargs = client.public_request.await_args.kwargs
         self.assertEqual(kwargs["retries_count"], 1)
         self.assertEqual(kwargs["data"]["fb_api_caller_class"], "RelayModern")
@@ -72,14 +76,30 @@ class PublicRequestRegressionTestCase(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(kwargs["headers"]["User-Agent"], client.public_user_agent)
         self.assertEqual(kwargs["headers"]["Origin"], "https://www.instagram.com")
-        self.assertEqual(kwargs["headers"]["X-ASBD-ID"], "129477")
+        self.assertEqual(kwargs["headers"]["X-ASBD-ID"], "359341")
         self.assertEqual(kwargs["headers"]["X-IG-App-ID"], "936619743392459")
         self.assertEqual(
             kwargs["headers"]["X-FB-Friendly-Name"],
             "usePolarisGetFollowListQuery",
         )
         self.assertEqual(kwargs["headers"]["X-CSRFToken"], "private-csrf-token")
+        self.assertEqual(kwargs["data"]["av"], "123")
         self.assertEqual(client.public.cookies_dict()["csrftoken"], "private-csrf-token")
+
+    async def test_public_doc_id_graphql_request_keeps_legacy_endpoint_without_web_envelope(self):
+        client = Client()
+        client.public_request = AsyncMock(return_value={"data": {"ok": True}})
+
+        await client.public_doc_id_graphql_request(
+            "27128499623469141",
+            {"shortcode": "abc"},
+            retries_count=1,
+        )
+
+        self.assertEqual(
+            client.public_request.await_args.args[0],
+            client.GRAPHQL_PUBLIC_API_URL,
+        )
 
     async def test_public_doc_id_graphql_request_rejects_untrusted_metadata_before_network(self):
         client = Client()
@@ -123,7 +143,7 @@ class PublicRequestRegressionTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(kwargs["headers"]["X-FB-LSD"], "lsd-token")
         self.assertEqual(kwargs["headers"]["X-CSRFToken"], "csrf-token")
         self.assertEqual(kwargs["headers"]["X-FB-Friendly-Name"], "PolarisPostRootQuery")
-        self.assertEqual(kwargs["headers"]["X-ASBD-ID"], "129477")
+        self.assertEqual(kwargs["headers"]["X-ASBD-ID"], "359341")
         self.assertEqual(kwargs["headers"]["X-IG-App-ID"], "936619743392459")
         self.assertEqual(kwargs["headers"]["X-Requested-With"], "XMLHttpRequest")
         self.assertFalse(kwargs["update_headers"])

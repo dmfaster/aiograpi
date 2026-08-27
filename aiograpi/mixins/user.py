@@ -1340,6 +1340,7 @@ class UserMixin(ClientMixin):
             retries_count=1,
             friendly_name=PUBLIC_WEB_FOLLOWERS_FRIENDLY_NAME,
             web_headers=True,
+            headers={"X-Root-Field-Name": PUBLIC_WEB_FOLLOWERS_CONNECTION},
         )
         connection = data.get(connection_field) if isinstance(data, dict) else None
         if not isinstance(connection, dict):
