@@ -32,6 +32,8 @@ query) and as **named convenience wrappers** (`user_info_v2_gql`,
 | Lightweight offensive-comment check (raw payload) | `Client.media_check_offensive_comment_v2(media_id, comment)` |
 | Followers list (mobile-app surface) | `Client.private_graphql_followers_list(user_id, rank_token, order=None)` |
 | Followers list typed helper (mobile-app surface) | `Client.user_followers_private_gql(user_id, amount=0, rank_token=None, order=None)` |
+| One modern web Relay followers page | `Client.user_followers_web_gql_page_result(user_id, end_cursor="", count=12, doc_id=...)` |
+| One modern web Relay following page | `Client.user_following_web_gql_page_result(user_id, end_cursor="", count=24, doc_id=...)` |
 | Following list (mobile-app surface) | `Client.private_graphql_following_list(user_id, rank_token, order=None)` |
 | Profile reels stream | `Client.private_graphql_clips_profile(target_user_id)` |
 | Direct inbox tray digest | `Client.private_graphql_inbox_tray_for_user(user_id)` |
@@ -60,6 +62,12 @@ All of the above are convenience wrappers around two primitives:
    — mobile host (`i.instagram.com/graphql/query`). Uses the
   authenticated `self.private` session so all standard mobile
   headers/cookies apply.
+
+The modern web follow-list helper uses the persisted
+`usePolarisGetFollowListQuery` operation and disables transport retries so one
+durable reservation means one HTTP attempt. Its default `doc_id` is a dated
+observation, not a permanent API contract; validate two-page cursor semantics
+on a fixed account/proxy canary before promoting a newly observed value.
 
 ## Using the named wrappers
 

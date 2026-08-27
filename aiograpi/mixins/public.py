@@ -435,6 +435,7 @@ class PublicRequestMixin(ClientMixin):
         headers: Optional[Dict[str, str]] = None,
         url: Optional[str] = None,
         include_lsd: bool = False,
+        retries_count: Optional[int] = None,
     ) -> Dict[str, Any]:
         """
         POST a doc_id-based GraphQL query to Instagram's public web endpoints.
@@ -454,6 +455,9 @@ class PublicRequestMixin(ClientMixin):
             Value for the ``Referer`` request header.
         headers: dict, optional
             Extra request headers merged on top of the public session's.
+        retries_count: int, optional
+            Maximum transport attempts. Durable callers should pass ``1``
+            and own retry policy outside the client.
         """
         data = {
             "variables": json.dumps(variables, separators=(",", ":")),
@@ -503,6 +507,7 @@ class PublicRequestMixin(ClientMixin):
             headers=merged_headers,
             update_headers=False,
             return_json=True,
+            retries_count=retries_count,
         )
         if body_json.get("data") is None:
             errors = body_json.get("errors") or []

@@ -13,6 +13,10 @@ from aiograpi.mixins.user import (
     MAX_USER_COUNT,
     PUBLIC_FOLLOWERS_QUERY_HASH,
     PUBLIC_FOLLOWING_QUERY_HASH,
+    PUBLIC_WEB_FOLLOWERS_CONNECTION,
+    PUBLIC_WEB_FOLLOWERS_DOC_ID,
+    PUBLIC_WEB_FOLLOWERS_FRIENDLY_NAME,
+    PUBLIC_WEB_FOLLOWING_CONNECTION,
     USER_INFO_BY_USERNAME_V2_DOC_ID,
     USER_INFO_V2_DOC_ID,
     UserMixin,
@@ -575,6 +579,92 @@ class UserMixinRegressionTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(page.next_cursor, "")
         self.assertEqual(page.cursor_field, "")
         self.assertIs(page.has_more, False)
+
+    async def test_user_followers_web_gql_page_result_uses_current_persisted_operation_once(self):
+        client = Client()
+        client.last_public_response = SimpleNamespace(status_code=200, content=b"web-relay-response")
+        client.public_doc_id_graphql_request = AsyncMock(
+            return_value={
+                PUBLIC_WEB_FOLLOWERS_CONNECTION: {
+                    "edges": [
+                        {"node": {"id": "1", "username": "one"}},
+                        {"node": {"id": "2", "username": "two"}},
+                    ],
+                    "page_info": {
+                        "has_next_page": True,
+                        "end_cursor": "opaque-web-relay-cursor",
+                    },
+                    "should_limit_list_of_followers": False,
+                }
+            }
+        )
+
+        page = await client.user_followers_web_gql_page_result(
+            "123",
+            end_cursor="previous-web-cursor",
+            count=50,
+        )
+
+        self.assertEqual([user.pk for user in page.users], ["1", "2"])
+        self.assertEqual(page.next_cursor, "opaque-web-relay-cursor")
+        self.assertEqual(page.cursor_field, "page_info.end_cursor")
+        self.assertIs(page.has_more, True)
+        self.assertEqual(page.route, "public_graphql")
+        self.assertEqual(page.response_bytes, len(b"web-relay-response"))
+        self.assertEqual(page.response_keys, (PUBLIC_WEB_FOLLOWERS_CONNECTION,))
+        self.assertEqual(
+            page.root_keys,
+            ("edges", "page_info", "should_limit_list_of_followers"),
+        )
+        client.public_doc_id_graphql_request.assert_awaited_once_with(
+            PUBLIC_WEB_FOLLOWERS_DOC_ID,
+            {
+                "after": "previous-web-cursor",
+                "before": None,
+                "count": 50,
+                "first": 50,
+                "isFollowerList": True,
+                "last": None,
+                "query": "",
+                "userID": "123",
+            },
+            headers={"X-FB-Friendly-Name": PUBLIC_WEB_FOLLOWERS_FRIENDLY_NAME},
+            retries_count=1,
+        )
+
+    async def test_user_followers_web_gql_page_result_rejects_untrusted_doc_id_before_network(self):
+        client = Client()
+        client.public_doc_id_graphql_request = AsyncMock()
+
+        with self.assertRaises(ValueError):
+            await client.user_followers_web_gql_page_result("123", doc_id="not-a-doc-id")
+        with self.assertRaises(ValueError):
+            await client.user_followers_web_gql_page_result(
+                "123",
+                count=MAX_PUBLIC_GRAPHQL_USER_COUNT + 1,
+            )
+
+        client.public_doc_id_graphql_request.assert_not_awaited()
+
+    async def test_user_following_web_gql_page_result_selects_the_following_connection(self):
+        client = Client()
+        client.public_doc_id_graphql_request = AsyncMock(
+            return_value={
+                PUBLIC_WEB_FOLLOWING_CONNECTION: {
+                    "edges": [{"node": {"id": "7", "username": "seven"}}],
+                    "page_info": {"has_next_page": False, "end_cursor": None},
+                }
+            }
+        )
+
+        page = await client.user_following_web_gql_page_result("123", count=24)
+
+        self.assertEqual([user.pk for user in page.users], ["7"])
+        self.assertEqual(page.next_cursor, "")
+        self.assertIs(page.has_more, False)
+        variables = client.public_doc_id_graphql_request.await_args.args[1]
+        self.assertIs(variables["isFollowerList"], False)
+        self.assertEqual(variables["count"], 24)
 
     async def test_user_followers_gql_page_result_rejects_invalid_request_before_network(self):
         client = Client()
