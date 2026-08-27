@@ -186,9 +186,7 @@ class PrivateRequestRegressionTestCase(unittest.IsolatedAsyncioTestCase):
     async def test_private_request_strict_mode_does_not_retry_incomplete_reads(self):
         client = self._build_client()
         client._user_id = "123"
-        client.private.post = AsyncMock(
-            side_effect=httpx_ext.RemoteProtocolError("peer closed the response early")
-        )
+        client.private.post = AsyncMock(side_effect=httpx_ext.RemoteProtocolError("peer closed the response early"))
 
         with (
             unittest.mock.patch("aiograpi.mixins.private.asyncio.sleep", new_callable=AsyncMock) as sleep,

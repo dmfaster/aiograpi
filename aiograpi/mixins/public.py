@@ -501,9 +501,7 @@ class PublicRequestMixin(ClientMixin):
         # backs query-hash and older doc-id callers, so only select the modern
         # route when the caller explicitly requests a browser envelope.
         query_url = url or (
-            self.GRAPHQL_PUBLIC_WEB_API_URL
-            if include_lsd or web_headers
-            else self.GRAPHQL_PUBLIC_API_URL
+            self.GRAPHQL_PUBLIC_WEB_API_URL if include_lsd or web_headers else self.GRAPHQL_PUBLIC_API_URL
         )
         referer_url = referer or "https://www.instagram.com/"
         lsd = None
