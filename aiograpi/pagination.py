@@ -7,7 +7,7 @@ from typing import Any, Literal, Optional
 
 from aiograpi.types import UserShort
 
-UserListRoute = Literal["private_v1", "private_graphql"]
+UserListRoute = Literal["private_v1", "private_graphql", "public_graphql"]
 
 _SAFE_FIELD_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,79}$")
 

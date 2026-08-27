@@ -16,28 +16,55 @@ def _html_response(body: str):
     response.status_code = 200
     response.url = "https://www.instagram.com/api/test/"
     response.text = body
+    response.content = body.encode()
     response.raise_for_status.return_value = None
     response.json.side_effect = _json_decode_error()
     return response
 
 
 class RequestLoggingRegressionTestCase(unittest.IsolatedAsyncioTestCase):
-    async def test_public_json_decode_error_log_truncates_response_body(self):
+    async def test_public_request_logs_exclude_proxy_credentials_and_query_values(self):
         client = Client()
         client.last_response_ts = 0
         client.public_request_logger = Mock()
-        long_body = "<html>" + ("A" * 5000) + "</html>"
+        client.public.proxy = "http://proxy-user:proxy-password@proxy.example:10001"
+        response = Mock()
+        response.status_code = 200
+        response.url = (
+            "https://www.instagram.com/graphql/query/?variables=%7B%22after%22%3A%22opaque-secret-cursor%22%7D"
+        )
+        response.raise_for_status.return_value = None
+        response.json.return_value = {"status": "ok", "data": {}}
+        client.public.get = AsyncMock(return_value=response)
+
+        await client._send_public_request(
+            "https://www.instagram.com/graphql/query/",
+            params={"variables": '{"after":"opaque-secret-cursor"}'},
+            return_json=True,
+        )
+
+        logged = repr(client.public_request_logger.method_calls)
+        self.assertNotIn("opaque-secret-cursor", logged)
+        self.assertNotIn("proxy-user", logged)
+        self.assertNotIn("proxy-password", logged)
+        self.assertNotIn("variables=", logged)
+        self.assertIn("https://www.instagram.com/graphql/query/", logged)
+
+    async def test_public_json_decode_error_log_excludes_response_body(self):
+        client = Client()
+        client.last_response_ts = 0
+        client.public_request_logger = Mock()
+        long_body = "<html>opaque-secret-response-value" + ("A" * 5000) + "</html>"
         response = _html_response(long_body)
         client.public.get = AsyncMock(return_value=response)
 
         with self.assertRaises(ClientJSONDecodeError):
             await client._send_public_request("https://www.instagram.com/api/test/", return_json=True)
 
-        logged_body = client.public_request_logger.error.call_args.args[3]
-        self.assertLessEqual(len(logged_body), 600)
-        self.assertTrue(logged_body.startswith("<html>"))
-        self.assertIn("truncated", logged_body)
-        self.assertNotEqual(logged_body, long_body)
+        logged = repr(client.public_request_logger.method_calls)
+        self.assertNotIn("opaque-secret-response-value", logged)
+        self.assertNotIn("<html>", logged)
+        self.assertIn(str(len(long_body.encode())), logged)
 
     async def test_private_graphql_request_accepts_incremental_json_lines(self):
         client = Client()
