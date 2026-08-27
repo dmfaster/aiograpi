@@ -1337,8 +1337,9 @@ class UserMixin(ClientMixin):
         data = await self.public_doc_id_graphql_request(
             normalized_doc_id,
             variables,
-            headers={"X-FB-Friendly-Name": PUBLIC_WEB_FOLLOWERS_FRIENDLY_NAME},
             retries_count=1,
+            friendly_name=PUBLIC_WEB_FOLLOWERS_FRIENDLY_NAME,
+            web_headers=True,
         )
         connection = data.get(connection_field) if isinstance(data, dict) else None
         if not isinstance(connection, dict):

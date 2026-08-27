@@ -28,7 +28,7 @@ class PublicRequestRegressionTestCase(unittest.IsolatedAsyncioTestCase):
         client.public.set_cookies({"csrftoken": "csrf-token"})
         client.public_request = AsyncMock(return_value={"data": {"ok": True}})
 
-        result = await client.public_doc_id_graphql_request("doc-id", {"shortcode": "abc"})
+        result = await client.public_doc_id_graphql_request("27128499623469141", {"shortcode": "abc"})
 
         self.assertEqual(result, {"ok": True})
         self.assertEqual(client.public.cookies_dict()["sessionid"], "123:session")
@@ -46,6 +46,55 @@ class PublicRequestRegressionTestCase(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(client.public_request.await_args.kwargs["retries_count"], 1)
+
+    async def test_public_doc_id_graphql_request_uses_one_authenticated_web_envelope(self):
+        client = Client()
+        client.authorization_data = {"sessionid": "123:session", "ds_user_id": "123"}
+        client.private.set_cookies({"csrftoken": "private-csrf-token"})
+        client.public_request = AsyncMock(return_value={"data": {"ok": True}})
+
+        result = await client.public_doc_id_graphql_request(
+            "37158170193798755",
+            {"userID": "123"},
+            retries_count=1,
+            friendly_name="usePolarisGetFollowListQuery",
+            web_headers=True,
+        )
+
+        self.assertEqual(result, {"ok": True})
+        client.public_request.assert_awaited_once()
+        kwargs = client.public_request.await_args.kwargs
+        self.assertEqual(kwargs["retries_count"], 1)
+        self.assertEqual(kwargs["data"]["fb_api_caller_class"], "RelayModern")
+        self.assertEqual(
+            kwargs["data"]["fb_api_req_friendly_name"],
+            "usePolarisGetFollowListQuery",
+        )
+        self.assertEqual(kwargs["headers"]["User-Agent"], client.public_user_agent)
+        self.assertEqual(kwargs["headers"]["Origin"], "https://www.instagram.com")
+        self.assertEqual(kwargs["headers"]["X-ASBD-ID"], "129477")
+        self.assertEqual(kwargs["headers"]["X-IG-App-ID"], "936619743392459")
+        self.assertEqual(
+            kwargs["headers"]["X-FB-Friendly-Name"],
+            "usePolarisGetFollowListQuery",
+        )
+        self.assertEqual(kwargs["headers"]["X-CSRFToken"], "private-csrf-token")
+        self.assertEqual(client.public.cookies_dict()["csrftoken"], "private-csrf-token")
+
+    async def test_public_doc_id_graphql_request_rejects_untrusted_metadata_before_network(self):
+        client = Client()
+        client.public_request = AsyncMock()
+
+        with self.assertRaises(ValueError):
+            await client.public_doc_id_graphql_request("not-a-doc-id", {})
+        with self.assertRaises(ValueError):
+            await client.public_doc_id_graphql_request(
+                "37158170193798755",
+                {},
+                friendly_name="bad friendly name!",
+            )
+
+        client.public_request.assert_not_awaited()
 
     async def test_public_doc_id_graphql_request_posts_web_api_with_lsd(self):
         client = Client()
@@ -76,5 +125,6 @@ class PublicRequestRegressionTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(kwargs["headers"]["X-FB-Friendly-Name"], "PolarisPostRootQuery")
         self.assertEqual(kwargs["headers"]["X-ASBD-ID"], "129477")
         self.assertEqual(kwargs["headers"]["X-IG-App-ID"], "936619743392459")
+        self.assertEqual(kwargs["headers"]["X-Requested-With"], "XMLHttpRequest")
         self.assertFalse(kwargs["update_headers"])
         self.assertTrue(kwargs["return_json"])

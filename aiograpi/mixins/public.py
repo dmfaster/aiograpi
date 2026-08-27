@@ -436,6 +436,8 @@ class PublicRequestMixin(ClientMixin):
         url: Optional[str] = None,
         include_lsd: bool = False,
         retries_count: Optional[int] = None,
+        friendly_name: Optional[str] = None,
+        web_headers: bool = False,
     ) -> Dict[str, Any]:
         """
         POST a doc_id-based GraphQL query to Instagram's public web endpoints.
@@ -458,12 +460,35 @@ class PublicRequestMixin(ClientMixin):
         retries_count: int, optional
             Maximum transport attempts. Durable callers should pass ``1``
             and own retry policy outside the client.
+        friendly_name: str, optional
+            Registered Relay operation name. When supplied it is sent in both
+            the request headers and form body, matching Instagram web Relay.
+        web_headers: bool, optional
+            Use the browser GraphQL request envelope without performing an
+            additional LSD/bootstrap request. This keeps authenticated
+            durable calls to exactly one HTTP attempt.
         """
+        normalized_doc_id = str(doc_id or "").strip()
+        if not re.fullmatch(r"[0-9]{8,40}", normalized_doc_id):
+            raise ValueError("doc_id must be an 8-40 digit value")
+        normalized_friendly_name = str(friendly_name or "").strip()
+        if normalized_friendly_name and not re.fullmatch(
+            r"[A-Za-z][A-Za-z0-9_]{0,127}",
+            normalized_friendly_name,
+        ):
+            raise ValueError("friendly_name contains unsupported characters")
         data = {
             "variables": json.dumps(variables, separators=(",", ":")),
-            "doc_id": doc_id,
+            "doc_id": normalized_doc_id,
             "server_timestamps": "true",
         }
+        if normalized_friendly_name:
+            data.update(
+                {
+                    "fb_api_caller_class": "RelayModern",
+                    "fb_api_req_friendly_name": normalized_friendly_name,
+                }
+            )
         inject_sessionid = getattr(self, "inject_sessionid_to_public", None)
         if inject_sessionid:
             inject_sessionid()
@@ -484,7 +509,7 @@ class PublicRequestMixin(ClientMixin):
                 "Instagram 273.0.0.16.70 (iPhone15,2; iOS 17_5_1; en_US; en-US; scale=3.00; 1290x2796; 470085518)"
             ),
         }
-        if include_lsd:
+        if include_lsd or web_headers:
             merged_headers.update(
                 {
                     "Content-Type": "application/x-www-form-urlencoded",
@@ -492,11 +517,19 @@ class PublicRequestMixin(ClientMixin):
                     "User-Agent": self.public_user_agent,
                     "X-ASBD-ID": PUBLIC_WEB_ASBD_ID,
                     "X-IG-App-ID": PUBLIC_WEB_APP_ID,
+                    "X-Requested-With": "XMLHttpRequest",
                 }
             )
             if lsd:
                 merged_headers["X-FB-LSD"] = lsd
+        if normalized_friendly_name:
+            merged_headers["X-FB-Friendly-Name"] = normalized_friendly_name
         csrftoken = self.public.cookies_dict().get("csrftoken")
+        if not csrftoken and web_headers:
+            candidate = str(getattr(self, "token", "") or "").strip()
+            if candidate:
+                self.public.set_cookies({"csrftoken": candidate})
+                csrftoken = candidate
         if csrftoken:
             merged_headers["X-CSRFToken"] = csrftoken
         if headers:
@@ -510,13 +543,8 @@ class PublicRequestMixin(ClientMixin):
             retries_count=retries_count,
         )
         if body_json.get("data") is None:
-            errors = body_json.get("errors") or []
-            summary = errors[0].get("summary") if errors else None
-            description = errors[0].get("description") if errors else None
             raise ClientGraphqlError(
-                "Missing 'data' in doc_id GraphQL response (doc_id={}). Summary: '{}'. Description: '{}'".format(
-                    doc_id, summary, description
-                ),
+                "Missing 'data' in doc_id GraphQL response",
                 response=body_json,
             )
         return body_json["data"]
