@@ -159,6 +159,17 @@ data = await cl.public_doc_id_graphql_request(
 )
 user_data = data["user"]
 
+# Authenticated web Relay envelope, still exactly one transport attempt.
+# The private session CSRF cookie is bridged into the public cookie jar;
+# no extra HTML/LSD bootstrap request is made.
+page = await cl.public_doc_id_graphql_request(
+    doc_id="37158170193798755",
+    variables={"isFollowerList": True, "query": "", "userID": "25025320"},
+    friendly_name="usePolarisGetFollowListQuery",
+    web_headers=True,
+    retries_count=1,
+)
+
 # Mobile host (XDT-prefixed root fields)
 result = await cl.private_graphql_query_request(
     friendly_name="MyCustomQuery",
