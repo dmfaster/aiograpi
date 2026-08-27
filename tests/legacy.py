@@ -130,6 +130,15 @@ REQUIRED_STORY_FIELDS = [
 ]
 
 
+def _private_live_credentials_configured() -> bool:
+    """Require an explicit live-test credential source before any login call."""
+    return bool(
+        os.getenv("TEST_ACCOUNTS_URL")
+        or os.getenv("IG_SESSIONID")
+        or (os.getenv("IG_USERNAME") and os.getenv("IG_PASSWORD"))
+    )
+
+
 def cleanup(*paths):
     for path in paths:
         try:
@@ -232,6 +241,8 @@ class ClientPrivateTestCase(BaseClientMixin, unittest.IsolatedAsyncioTestCase):
         raise last_exc or RuntimeError("No usable fresh account returned")
 
     async def asyncSetUp(self):
+        if not _private_live_credentials_configured():
+            self.skipTest("explicit Instagram live-test credentials are not configured")
         if TEST_ACCOUNTS_URL:
             self.cl = await self.fresh_account()
             return
@@ -284,6 +295,10 @@ class ClientPrivateTestCase(BaseClientMixin, unittest.IsolatedAsyncioTestCase):
 
 class ClientPublicTestCase(BaseClientMixin, unittest.IsolatedAsyncioTestCase):
     cl = None
+
+    async def asyncSetUp(self):
+        if os.getenv("AIOGRAPI_RUN_LIVE_TESTS") != "1":
+            self.skipTest("anonymous Instagram live tests require AIOGRAPI_RUN_LIVE_TESTS=1")
 
     def assertDict(self, obj, data):
         for key, value in data.items():
