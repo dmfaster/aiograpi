@@ -1,5 +1,6 @@
 import json
 import logging
+import re
 from copy import deepcopy
 from typing import Any, AsyncIterator, Dict, List, Literal, Optional, Sequence, Tuple, Union
 
@@ -50,12 +51,21 @@ from aiograpi.utils.iterators import iter_paginated
 from aiograpi.utils.serialization import dumps, json_value
 
 MAX_USER_COUNT = 200
+MAX_PUBLIC_GRAPHQL_USER_COUNT = 50
+DEFAULT_PUBLIC_GRAPHQL_FOLLOWERS_COUNT = 12
+DEFAULT_PUBLIC_GRAPHQL_FOLLOWING_COUNT = 24
+PUBLIC_FOLLOWERS_QUERY_HASH = "37479f2b8209594dde7facb0d904896a"
+PUBLIC_FOLLOWING_QUERY_HASH = "58712303d941c6855d4e888c5f0cd22f"
 INFO_FROM_MODULES = ("self_profile", "feed_timeline", "reel_feed_timeline")
 FOLLOWERS_ORDERS = ("date_followed_latest", "date_followed_earliest")
 USER_WEB_PROFILE_DOC_ID = "26762473490008061"
 USER_INFO_V2_DOC_ID = "25980296051578533"
 USER_INFO_BY_USERNAME_V2_DOC_ID = "26347858941511777"
 FOLLOWERS_LIST_CLIENT_DOC_ID = "28479704797510738576165798526"
+# Candidate extracted from the current Android release family. Keep the
+# production default pinned above until a bounded account/proxy canary proves
+# the rotated document shape and cursor semantics.
+FOLLOWERS_LIST_CURRENT_CLIENT_DOC_ID = "284797047915973598462248516468"
 FOLLOWING_LIST_CLIENT_DOC_ID = "161046392817718486717479294775"
 ADDRESS_BOOK_DEFAULT_INCLUDE = ("extra_display_name", "thumbnails")
 USER_REPORT_REASONS = {"spam": ("ig_report_account", "ig_its_inappropriate", "ig_spam_v3")}
@@ -918,30 +928,45 @@ class UserMixin(ClientMixin):
         Tuple[List[UserShort], str]
             List of objects of User type with cursor
         """
-        users = []
-        variables = {
-            "id": user_id,
-            "include_reel": True,
-            "fetch_mutual": False,
-            "first": 24,
-        }
-        self.inject_sessionid_to_public()
+        users: List[UserShort] = []
+        seen_cursors = {str(end_cursor or "")}
         while True:
-            if end_cursor:
-                variables["after"] = end_cursor
-            data = await self.public_graphql_request(variables, query_hash="58712303d941c6855d4e888c5f0cd22f")
-            if not data["user"] and not users:
-                raise UserNotFound(user_id=user_id, **data)
-            page_info = json_value(data, "user", "edge_follow", "page_info", default={})
-            edges = json_value(data, "user", "edge_follow", "edges", default=[])
-            for edge in edges:
-                users.append(extract_user_short(edge["node"]))
-            end_cursor = page_info.get("end_cursor")
-            if not page_info.get("has_next_page") or not end_cursor:
+            remaining = max_amount - len(users) if max_amount else DEFAULT_PUBLIC_GRAPHQL_FOLLOWING_COUNT
+            page = await self.user_following_gql_page_result(
+                user_id,
+                end_cursor=end_cursor or "",
+                count=min(DEFAULT_PUBLIC_GRAPHQL_FOLLOWING_COUNT, remaining),
+            )
+            users.extend(page.users)
+            next_cursor = page.next_cursor
+            if not next_cursor:
+                end_cursor = ""
                 break
             if max_amount and len(users) >= max_amount:
+                end_cursor = next_cursor
                 break
-        return users, end_cursor
+            if next_cursor in seen_cursors:
+                raise ClientGraphqlError("Public GraphQL following cursor repeated")
+            seen_cursors.add(next_cursor)
+            end_cursor = next_cursor
+        return users, str(end_cursor or "")
+
+    async def user_following_gql_page_result(
+        self,
+        user_id: str,
+        *,
+        end_cursor: str = "",
+        count: int = DEFAULT_PUBLIC_GRAPHQL_FOLLOWING_COUNT,
+        query_hash: str = PUBLIC_FOLLOWING_QUERY_HASH,
+    ) -> UserListPage:
+        """Fetch exactly one public Relay GraphQL following page."""
+        return await self._user_public_gql_page_result(
+            user_id,
+            connection_field="edge_follow",
+            end_cursor=end_cursor,
+            count=count,
+            query_hash=query_hash,
+        )
 
     async def user_following_gql(self, user_id: str, amount: int = 0) -> List[UserShort]:
         """
@@ -1185,31 +1210,122 @@ class UserMixin(ClientMixin):
         Tuple[List[UserShort], str]
             List of objects of User type with cursor
         """
+        users: List[UserShort] = []
+        seen_cursors = {str(end_cursor or "")}
+        while True:
+            remaining = max_amount - len(users) if max_amount else DEFAULT_PUBLIC_GRAPHQL_FOLLOWERS_COUNT
+            page = await self.user_followers_gql_page_result(
+                user_id,
+                end_cursor=end_cursor or "",
+                count=min(DEFAULT_PUBLIC_GRAPHQL_FOLLOWERS_COUNT, remaining),
+            )
+            users.extend(page.users)
+            next_cursor = page.next_cursor
+            if not next_cursor:
+                end_cursor = ""
+                break
+            if max_amount and len(users) >= max_amount:
+                end_cursor = next_cursor
+                break
+            if next_cursor in seen_cursors:
+                raise ClientGraphqlError("Public GraphQL followers cursor repeated")
+            seen_cursors.add(next_cursor)
+            end_cursor = next_cursor
+        return users, str(end_cursor or "")
+
+    async def user_followers_gql_page_result(
+        self,
+        user_id: str,
+        *,
+        end_cursor: str = "",
+        count: int = DEFAULT_PUBLIC_GRAPHQL_FOLLOWERS_COUNT,
+        query_hash: str = PUBLIC_FOLLOWERS_QUERY_HASH,
+    ) -> UserListPage:
+        """Fetch exactly one public Relay GraphQL followers page.
+
+        The opaque ``end_cursor`` is returned without being consumed so a
+        durable worker can commit the users and checkpoint atomically. This
+        method always performs one provider request and never logs the cursor.
+        """
+        return await self._user_public_gql_page_result(
+            user_id,
+            connection_field="edge_followed_by",
+            end_cursor=end_cursor,
+            count=count,
+            query_hash=query_hash,
+        )
+
+    async def _user_public_gql_page_result(
+        self,
+        user_id: str,
+        *,
+        connection_field: str,
+        end_cursor: str,
+        count: int,
+        query_hash: str,
+    ) -> UserListPage:
+        if connection_field not in {"edge_followed_by", "edge_follow"}:
+            raise ValueError("unsupported public GraphQL follow-list connection")
+        if not 1 <= count <= MAX_PUBLIC_GRAPHQL_USER_COUNT:
+            raise ValueError(f"count must be between 1 and {MAX_PUBLIC_GRAPHQL_USER_COUNT}")
+        normalized_query_hash = str(query_hash or "").strip()
+        if not re.fullmatch(r"[a-f0-9]{32}", normalized_query_hash):
+            raise ValueError("query_hash must be a lowercase 32-character hex value")
+
         user_id = str(user_id)
-        users = []
-        variables = {
+        variables: Dict[str, Any] = {
             "id": user_id,
             "include_reel": True,
             "fetch_mutual": False,
-            "first": 12,
+            "first": count,
         }
+        normalized_cursor = str(end_cursor or "").strip()
+        if normalized_cursor:
+            variables["after"] = normalized_cursor
+
         self.inject_sessionid_to_public()
-        while True:
-            if end_cursor:
-                variables["after"] = end_cursor
-            data = await self.public_graphql_request(variables, query_hash="37479f2b8209594dde7facb0d904896a")
-            if not data["user"] and not users:
-                raise UserNotFound(user_id=user_id, **data)
-            page_info = json_value(data, "user", "edge_followed_by", "page_info", default={})
-            edges = json_value(data, "user", "edge_followed_by", "edges", default=[])
-            for edge in edges:
-                users.append(extract_user_short(edge["node"]))
-            end_cursor = page_info.get("end_cursor")
-            if not page_info.get("has_next_page") or not end_cursor:
-                break
-            if max_amount and len(users) >= max_amount:
-                break
-        return users, end_cursor
+        data = await self.public_graphql_request(
+            variables,
+            query_hash=normalized_query_hash,
+        )
+        user = data.get("user") if isinstance(data, dict) else None
+        if user is None:
+            raise UserNotFound(user_id=user_id, **(data if isinstance(data, dict) else {}))
+        if not isinstance(user, dict):
+            raise ClientGraphqlError("Invalid public GraphQL user payload")
+        connection = user.get(connection_field)
+        if not isinstance(connection, dict):
+            raise ClientGraphqlError("Missing public GraphQL follow-list payload")
+
+        edges = connection.get("edges")
+        edges = edges if isinstance(edges, list) else []
+        raw_users = [edge["node"] for edge in edges if isinstance(edge, dict) and isinstance(edge.get("node"), dict)]
+        users = [extract_user_short(raw_user) for raw_user in raw_users]
+        page_info = connection.get("page_info")
+        page_info = page_info if isinstance(page_info, dict) else {}
+        has_more = normalize_collection_has_more(
+            {"page_info": page_info},
+            next_cursor="",
+        )
+        next_cursor, cursor_field = normalize_collection_cursor(
+            {"page_info": page_info},
+        )
+        if has_more is not True:
+            next_cursor = ""
+            cursor_field = ""
+        http_status, response_bytes = response_observability(self.last_public_response)
+        return UserListPage(
+            users=users,
+            next_cursor=next_cursor,
+            cursor_field=cursor_field,
+            has_more=has_more,
+            route="public_graphql",
+            response_keys=safe_mapping_keys(data),
+            root_keys=safe_mapping_keys(connection),
+            raw_user_count=len(raw_users),
+            http_status=http_status,
+            response_bytes=response_bytes,
+        )
 
     async def user_followers_gql(self, user_id: str, amount: int = 0) -> List[UserShort]:
         """

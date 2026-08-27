@@ -19,7 +19,7 @@ def test_utils_submodules_are_importable():
     expected = {
         "aiograpi.utils.auth": ["gen_token", "generate_signature", "generate_jazoest"],
         "aiograpi.utils.ids": ["InstagramIdCodec"],
-        "aiograpi.utils.logging": ["truncate_log_text"],
+        "aiograpi.utils.logging": ["redact_url_for_log", "truncate_log_text"],
         "aiograpi.utils.serialization": ["InstagrapiJSONEncoder", "dumps", "json_value"],
         "aiograpi.utils.timing": ["date_time_original", "random_delay"],
         "aiograpi.utils.validation": ["vassert"],

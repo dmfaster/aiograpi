@@ -28,7 +28,7 @@ from aiograpi.exceptions import (
     TermsUnblock,
 )
 from aiograpi.mixins.base import ClientMixin
-from aiograpi.utils.logging import truncate_log_text
+from aiograpi.utils.logging import redact_url_for_log
 from aiograpi.utils.timing import random_delay
 
 PublicTransport = Literal["requests", "curl"]
@@ -254,13 +254,14 @@ class PublicRequestMixin(ClientMixin):
                 response = await self.public.post(url, data=data, params=params, headers=per_request_headers)
             else:
                 response = await self.public.get(url, params=params, headers=per_request_headers)
-            self.public_request_logger.debug("public_request %s: %s", response.status_code, response.url)
+            safe_url = redact_url_for_log(response.url)
+            self.public_request_logger.debug("public_request %s: %s", response.status_code, safe_url)
             self.public_request_logger.info(
                 "[%s] [%s] %s %s",
-                self.public.proxy,
+                "proxy" if self.public.proxy else "direct",
                 response.status_code,
                 "POST" if data else "GET",
-                response.url,
+                safe_url,
             )
             self.last_public_response = response
             response.raise_for_status()
@@ -270,7 +271,7 @@ class PublicRequestMixin(ClientMixin):
             return response.text
 
         except orjson.JSONDecodeError as e:
-            url = str(response.url)
+            url = redact_url_for_log(response.url)
             if "/login/" in url:
                 raise ClientLoginRequired(e, response=response)
             elif "/challenge/" in url:
@@ -285,10 +286,10 @@ class PublicRequestMixin(ClientMixin):
                 raise AboutUsError(e, response=response)
 
             self.public_request_logger.error(
-                "Status %s: JSONDecodeError in public_request (url=%s) >>> %s",
+                "Status %s: JSONDecodeError in public_request (url=%s response_bytes=%s)",
                 response.status_code,
                 url,
-                truncate_log_text(response.text),
+                len(response.content),
             )
             raise ClientJSONDecodeError(
                 "JSONDecodeError {0!s} while opening {1!s}".format(e, url),
