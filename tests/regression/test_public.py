@@ -35,6 +35,18 @@ class PublicRequestRegressionTestCase(unittest.IsolatedAsyncioTestCase):
         headers = client.public_request.await_args.kwargs["headers"]
         self.assertEqual(headers["X-CSRFToken"], "csrf-token")
 
+    async def test_public_doc_id_graphql_request_forwards_exact_attempt_budget(self):
+        client = Client()
+        client.public_request = AsyncMock(return_value={"data": {"ok": True}})
+
+        await client.public_doc_id_graphql_request(
+            "37158170193798755",
+            {"userID": "123"},
+            retries_count=1,
+        )
+
+        self.assertEqual(client.public_request.await_args.kwargs["retries_count"], 1)
+
     async def test_public_doc_id_graphql_request_posts_web_api_with_lsd(self):
         client = Client()
         client.public.set_cookies({"csrftoken": "csrf-token"})

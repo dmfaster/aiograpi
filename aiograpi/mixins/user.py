@@ -56,6 +56,13 @@ DEFAULT_PUBLIC_GRAPHQL_FOLLOWERS_COUNT = 12
 DEFAULT_PUBLIC_GRAPHQL_FOLLOWING_COUNT = 24
 PUBLIC_FOLLOWERS_QUERY_HASH = "37479f2b8209594dde7facb0d904896a"
 PUBLIC_FOLLOWING_QUERY_HASH = "58712303d941c6855d4e888c5f0cd22f"
+# Observed in Instagram web server revision 1044017588 on 2026-07-29.
+# This registered operation rotates and remains a canary/lab candidate until
+# its two-page cursor contract is proven against a bound account and proxy.
+PUBLIC_WEB_FOLLOWERS_DOC_ID = "37158170193798755"
+PUBLIC_WEB_FOLLOWERS_FRIENDLY_NAME = "usePolarisGetFollowListQuery"
+PUBLIC_WEB_FOLLOWERS_CONNECTION = "xdt_api__v1__friendships__followers__connection"
+PUBLIC_WEB_FOLLOWING_CONNECTION = "xdt_api__v1__friendships__following__connection"
 INFO_FROM_MODULES = ("self_profile", "feed_timeline", "reel_feed_timeline")
 FOLLOWERS_ORDERS = ("date_followed_latest", "date_followed_earliest")
 USER_WEB_PROFILE_DOC_ID = "26762473490008061"
@@ -1255,6 +1262,89 @@ class UserMixin(ClientMixin):
             query_hash=query_hash,
         )
 
+    async def user_followers_web_gql_page_result(
+        self,
+        user_id: str,
+        *,
+        end_cursor: str = "",
+        count: int = DEFAULT_PUBLIC_GRAPHQL_FOLLOWERS_COUNT,
+        doc_id: str = PUBLIC_WEB_FOLLOWERS_DOC_ID,
+    ) -> UserListPage:
+        """Fetch one modern web Relay followers page by persisted doc id.
+
+        The request mirrors Instagram's ``usePolarisGetFollowListQuery``
+        operation and returns its opaque Relay cursor without consuming it.
+        The registered ``doc_id`` is intentionally overridable because web
+        operations rotate independently of this package. One call performs
+        exactly one HTTP attempt; durable callers own retries and checkpoints.
+        """
+        return await self._user_web_gql_page_result(
+            user_id,
+            connection_field=PUBLIC_WEB_FOLLOWERS_CONNECTION,
+            is_follower_list=True,
+            end_cursor=end_cursor,
+            count=count,
+            doc_id=doc_id,
+        )
+
+    async def user_following_web_gql_page_result(
+        self,
+        user_id: str,
+        *,
+        end_cursor: str = "",
+        count: int = DEFAULT_PUBLIC_GRAPHQL_FOLLOWING_COUNT,
+        doc_id: str = PUBLIC_WEB_FOLLOWERS_DOC_ID,
+    ) -> UserListPage:
+        """Fetch one modern web Relay following page by persisted doc id."""
+        return await self._user_web_gql_page_result(
+            user_id,
+            connection_field=PUBLIC_WEB_FOLLOWING_CONNECTION,
+            is_follower_list=False,
+            end_cursor=end_cursor,
+            count=count,
+            doc_id=doc_id,
+        )
+
+    async def _user_web_gql_page_result(
+        self,
+        user_id: str,
+        *,
+        connection_field: str,
+        is_follower_list: bool,
+        end_cursor: str,
+        count: int,
+        doc_id: str,
+    ) -> UserListPage:
+        if connection_field not in {PUBLIC_WEB_FOLLOWERS_CONNECTION, PUBLIC_WEB_FOLLOWING_CONNECTION}:
+            raise ValueError("unsupported public web GraphQL follow-list connection")
+        if not 1 <= count <= MAX_PUBLIC_GRAPHQL_USER_COUNT:
+            raise ValueError(f"count must be between 1 and {MAX_PUBLIC_GRAPHQL_USER_COUNT}")
+        normalized_doc_id = str(doc_id or "").strip()
+        if not re.fullmatch(r"[0-9]{8,40}", normalized_doc_id):
+            raise ValueError("doc_id must be an 8-40 digit value")
+
+        normalized_cursor = str(end_cursor or "").strip()
+        variables: Dict[str, Any] = {
+            "after": normalized_cursor or None,
+            "before": None,
+            "count": count,
+            "first": count,
+            "isFollowerList": is_follower_list,
+            "last": None,
+            "query": "",
+            "userID": str(user_id),
+        }
+        data = await self.public_doc_id_graphql_request(
+            normalized_doc_id,
+            variables,
+            headers={"X-FB-Friendly-Name": PUBLIC_WEB_FOLLOWERS_FRIENDLY_NAME},
+            retries_count=1,
+        )
+        connection = data.get(connection_field) if isinstance(data, dict) else None
+        if not isinstance(connection, dict):
+            raise ClientGraphqlError("Missing public web GraphQL followers payload")
+        return self._coerce_public_follow_list_page(data, connection)
+
     async def _user_public_gql_page_result(
         self,
         user_id: str,
@@ -1298,6 +1388,13 @@ class UserMixin(ClientMixin):
         if not isinstance(connection, dict):
             raise ClientGraphqlError("Missing public GraphQL follow-list payload")
 
+        return self._coerce_public_follow_list_page(data, connection)
+
+    def _coerce_public_follow_list_page(
+        self,
+        data: Dict[str, Any],
+        connection: Dict[str, Any],
+    ) -> UserListPage:
         edges = connection.get("edges")
         edges = edges if isinstance(edges, list) else []
         raw_users = [edge["node"] for edge in edges if isinstance(edge, dict) and isinstance(edge.get("node"), dict)]
