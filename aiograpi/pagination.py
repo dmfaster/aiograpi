@@ -48,6 +48,9 @@ class UserListPage:
     raw_user_count: int
     http_status: int
     response_bytes: int
+    page_size: Optional[int] = None
+    big_list: Optional[bool] = None
+    should_limit_list_of_followers: Optional[bool] = None
 
 
 def safe_mapping_keys(value: object) -> tuple[str, ...]:
@@ -76,6 +79,25 @@ def normalize_collection_has_more(payload: object, *, next_cursor: str) -> Optio
     if next_cursor:
         return True
     return None
+
+
+def normalize_collection_page_size(payload: object) -> Optional[int]:
+    """Return a bounded, non-sensitive page-size hint when Instagram exposes one."""
+    value = _mapping_path(payload, ("page_size",))
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        normalized = int(value)
+    except (TypeError, ValueError):
+        return None
+    return normalized if 0 <= normalized <= 10_000 else None
+
+
+def normalize_collection_bool(payload: object, field: str) -> Optional[bool]:
+    """Read one allowlisted collection boolean without retaining response data."""
+    if field not in {"big_list", "should_limit_list_of_followers"}:
+        raise ValueError("unsupported collection boolean")
+    return _optional_bool(_mapping_path(payload, (field,)))
 
 
 def response_observability(response: object) -> tuple[int, int]:

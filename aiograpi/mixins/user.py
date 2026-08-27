@@ -30,8 +30,10 @@ from aiograpi.extractors import (
 from aiograpi.mixins.base import ClientMixin
 from aiograpi.pagination import (
     UserListPage,
+    normalize_collection_bool,
     normalize_collection_cursor,
     normalize_collection_has_more,
+    normalize_collection_page_size,
     response_observability,
     safe_mapping_keys,
 )
@@ -53,6 +55,8 @@ FOLLOWERS_ORDERS = ("date_followed_latest", "date_followed_earliest")
 USER_WEB_PROFILE_DOC_ID = "26762473490008061"
 USER_INFO_V2_DOC_ID = "25980296051578533"
 USER_INFO_BY_USERNAME_V2_DOC_ID = "26347858941511777"
+FOLLOWERS_LIST_CLIENT_DOC_ID = "28479704797510738576165798526"
+FOLLOWING_LIST_CLIENT_DOC_ID = "161046392817718486717479294775"
 ADDRESS_BOOK_DEFAULT_INCLUDE = ("extra_display_name", "thumbnails")
 USER_REPORT_REASONS = {"spam": ("ig_report_account", "ig_its_inappropriate", "ig_spam_v3")}
 
@@ -60,8 +64,110 @@ logger = logging.getLogger(__name__)
 
 INFO_FROM_MODULE = Literal["self_profile", "feed_timeline", "reel_feed_timeline"]
 FOLLOWERS_ORDER = Literal["date_followed_latest", "date_followed_earliest"]
+FOLLOW_LIST_QUERY_PROFILE = Literal["canonical", "pagination_metadata", "legacy_sparse"]
 USER_REPORT_REASON = Literal["spam"]
 UserBlockSurface = Literal["profile", "direct_thread_info"]
+
+
+def _followers_list_variables(
+    user_id: str,
+    rank_token: str,
+    *,
+    max_id: Optional[Union[str, int]],
+    order: Optional[FOLLOWERS_ORDER],
+    query_profile: FOLLOW_LIST_QUERY_PROFILE,
+) -> dict:
+    if query_profile not in {"canonical", "pagination_metadata", "legacy_sparse"}:
+        raise ValueError("unsupported follow-list query profile")
+    request_data = {
+        "rank_token": rank_token,
+        "enableGroups": True,
+    }
+    if query_profile == "legacy_sparse":
+        variables = {
+            "include_unseen_count": False,
+            "query": "",
+            "include_biography": False,
+            "user_id": str(user_id),
+            "request_data": request_data,
+            "search_surface": "follow_list_page",
+        }
+    else:
+        include_pagination_metadata = query_profile == "pagination_metadata"
+        variables = {
+            "user_id": str(user_id),
+            "skip_suggested_users": True,
+            "skip_more_groups_available": True,
+            "skip_friendship_followers_fields": True,
+            "request_data": request_data,
+            "skip_page_size": not include_pagination_metadata,
+            "skip_pending_admins": True,
+            "skip_has_more": not include_pagination_metadata,
+            "search_surface": "follow_list_page",
+            "query": "",
+            "skip_big_list": not include_pagination_metadata,
+            "include_unseen_count": True,
+        }
+    if max_id is not None:
+        variables["max_id"] = max_id
+    if order is not None:
+        variables["order"] = order
+    return variables
+
+
+def _following_list_variables(
+    user_id: str,
+    rank_token: str,
+    *,
+    max_id: Optional[Union[str, int]],
+    order: Optional[FOLLOWERS_ORDER],
+    query_profile: FOLLOW_LIST_QUERY_PROFILE,
+    skip_preview_hashtags: bool,
+    skip_hashtag_count: bool,
+) -> dict:
+    if query_profile not in {"canonical", "pagination_metadata", "legacy_sparse"}:
+        raise ValueError("unsupported follow-list query profile")
+    request_data = {
+        "search_surface": "follow_list_page",
+        "rank_token": rank_token,
+        "includes_hashtags": True,
+    }
+    if query_profile == "legacy_sparse":
+        variables = {
+            "include_unseen_count": False,
+            "enable_groups": True,
+            "user_id": str(user_id),
+            "request_data": request_data,
+            "include_biography": False,
+            "query": "",
+        }
+    else:
+        include_pagination_metadata = query_profile == "pagination_metadata"
+        variables = {
+            "user_id": str(user_id),
+            "skip_use_clickable_see_more": True,
+            "skip_preview_hashtags": skip_preview_hashtags,
+            "skip_should_limit_list_of_followers": True,
+            "skip_pending_admins": True,
+            "skip_more_groups_available": True,
+            "skip_friendship_followers_fields": False,
+            "request_data": request_data,
+            "skip_page_size": not include_pagination_metadata,
+            "skip_friend_requests": True,
+            "skip_big_list": not include_pagination_metadata,
+            "query": "",
+            "include_profile_update_info": True,
+            "skip_suggested_users": True,
+            "include_unseen_count": True,
+            "skip_has_more": not include_pagination_metadata,
+            "enable_groups": True,
+            "skip_hashtag_count": skip_hashtag_count,
+        }
+    if max_id is not None:
+        variables["max_id"] = max_id
+    if order is not None:
+        variables["order"] = order
+    return variables
 
 
 class UserMixin(ClientMixin):
@@ -958,6 +1064,12 @@ class UserMixin(ClientMixin):
             raw_user_count=len(raw_users),
             http_status=http_status,
             response_bytes=response_bytes,
+            page_size=normalize_collection_page_size(result),
+            big_list=normalize_collection_bool(result, "big_list"),
+            should_limit_list_of_followers=normalize_collection_bool(
+                result,
+                "should_limit_list_of_followers",
+            ),
         )
 
     async def user_following_v1(self, user_id: str, amount: int = 0) -> List[UserShort]:
@@ -1231,6 +1343,12 @@ class UserMixin(ClientMixin):
             raw_user_count=len(raw_users),
             http_status=http_status,
             response_bytes=response_bytes,
+            page_size=normalize_collection_page_size(result),
+            big_list=normalize_collection_bool(result, "big_list"),
+            should_limit_list_of_followers=normalize_collection_bool(
+                result,
+                "should_limit_list_of_followers",
+            ),
         )
 
     async def user_followers_v1(
@@ -1322,6 +1440,8 @@ class UserMixin(ClientMixin):
         rank_token: Optional[str] = None,
         order: Optional[FOLLOWERS_ORDER] = None,
         priority: str = "u=3, i",
+        client_doc_id: Optional[str] = None,
+        query_profile: FOLLOW_LIST_QUERY_PROFILE = "canonical",
     ) -> Tuple[List[UserShort], Optional[str]]:
         """
         Get user's followers information by Private GraphQL API and max_id.
@@ -1352,6 +1472,8 @@ class UserMixin(ClientMixin):
             rank_token=rank_token,
             order=order,
             priority=priority,
+            client_doc_id=client_doc_id,
+            query_profile=query_profile,
         )
         users = page.users[:max_amount] if max_amount else page.users
         return users, page.next_cursor or None
@@ -1364,15 +1486,24 @@ class UserMixin(ClientMixin):
         rank_token: Optional[str] = None,
         order: Optional[FOLLOWERS_ORDER] = None,
         priority: str = "u=3, i",
+        client_doc_id: Optional[str] = None,
+        query_profile: FOLLOW_LIST_QUERY_PROFILE = "canonical",
     ) -> UserListPage:
         """Fetch one private GraphQL followers page with safe shape metadata."""
         user_id = str(user_id)
+        request_kwargs: Dict[str, Any] = {
+            "max_id": max_id,
+            "order": order,
+            "priority": priority,
+        }
+        if client_doc_id is not None:
+            request_kwargs["client_doc_id"] = client_doc_id
+        if query_profile != "canonical":
+            request_kwargs["query_profile"] = query_profile
         result = await self.private_graphql_followers_list(
             user_id,
             rank_token or self.rank_token,
-            max_id=max_id,
-            order=order,
-            priority=priority,
+            **request_kwargs,
         )
         followers = self._private_graphql_root(result, "xdt_api__v1__friendships__followers")
         if not followers:
@@ -1392,6 +1523,12 @@ class UserMixin(ClientMixin):
             raw_user_count=len(raw_users),
             http_status=http_status,
             response_bytes=response_bytes,
+            page_size=normalize_collection_page_size(followers),
+            big_list=normalize_collection_bool(followers, "big_list"),
+            should_limit_list_of_followers=normalize_collection_bool(
+                followers,
+                "should_limit_list_of_followers",
+            ),
         )
 
     async def user_following_private_gql_page_result(
@@ -1402,15 +1539,24 @@ class UserMixin(ClientMixin):
         rank_token: Optional[str] = None,
         order: Optional[FOLLOWERS_ORDER] = None,
         priority: str = "u=3, i",
+        client_doc_id: Optional[str] = None,
+        query_profile: FOLLOW_LIST_QUERY_PROFILE = "canonical",
     ) -> UserListPage:
         """Fetch one private GraphQL following page with safe shape metadata."""
         user_id = str(user_id)
+        request_kwargs: Dict[str, Any] = {
+            "max_id": max_id,
+            "order": order,
+            "priority": priority,
+        }
+        if client_doc_id is not None:
+            request_kwargs["client_doc_id"] = client_doc_id
+        if query_profile != "canonical":
+            request_kwargs["query_profile"] = query_profile
         result = await self.private_graphql_following_list(
             user_id,
             rank_token or self.rank_token,
-            max_id=max_id,
-            order=order,
-            priority=priority,
+            **request_kwargs,
         )
         following = self._private_graphql_root(result, "xdt_api__v1__friendships__following")
         if not following:
@@ -1430,6 +1576,12 @@ class UserMixin(ClientMixin):
             raw_user_count=len(raw_users),
             http_status=http_status,
             response_bytes=response_bytes,
+            page_size=normalize_collection_page_size(following),
+            big_list=normalize_collection_bool(following, "big_list"),
+            should_limit_list_of_followers=normalize_collection_bool(
+                following,
+                "should_limit_list_of_followers",
+            ),
         )
 
     @staticmethod
@@ -1454,6 +1606,8 @@ class UserMixin(ClientMixin):
         rank_token: Optional[str] = None,
         order: Optional[FOLLOWERS_ORDER] = None,
         priority: str = "u=3, i",
+        client_doc_id: Optional[str] = None,
+        query_profile: FOLLOW_LIST_QUERY_PROFILE = "canonical",
     ) -> List[UserShort]:
         """
         Get user's followers information by Private GraphQL API.
@@ -1487,6 +1641,8 @@ class UserMixin(ClientMixin):
                 rank_token=rank_token,
                 order=order,
                 priority=priority,
+                client_doc_id=client_doc_id,
+                query_profile=query_profile,
             )
             users.extend(chunk)
             if amount and len(users) >= amount:
@@ -2468,7 +2624,7 @@ class UserMixin(ClientMixin):
         self,
         user_id: str,
         rank_token: str,
-        client_doc_id: str = "28479704797510738576165798526",
+        client_doc_id: str = FOLLOWERS_LIST_CLIENT_DOC_ID,
         max_id: Optional[Union[str, int]] = None,
         priority: Optional[str] = None,
         order: Optional[FOLLOWERS_ORDER] = None,
@@ -2476,6 +2632,7 @@ class UserMixin(ClientMixin):
         exclude_unused_fields: Optional[bool] = None,
         skip_preview_hashtags: bool = True,
         skip_hashtag_count: bool = True,
+        query_profile: FOLLOW_LIST_QUERY_PROFILE = "canonical",
     ) -> dict:
         """
         Private-side ``FollowersList`` GraphQL query.
@@ -2508,30 +2665,15 @@ class UserMixin(ClientMixin):
         dict
             Raw GraphQL response.
         """
-        request_data = {
-            "rank_token": rank_token,
-            "enableGroups": True,
-        }
-        variables = {
-            "user_id": str(user_id),
-            "skip_suggested_users": True,
-            "skip_more_groups_available": True,
-            "skip_friendship_followers_fields": True,
-            "request_data": request_data,
-            "skip_page_size": True,
-            "skip_pending_admins": True,
-            "skip_has_more": True,
-            "search_surface": "follow_list_page",
-            "query": "",
-            "skip_big_list": True,
-            "include_unseen_count": True,
-        }
+        variables = _followers_list_variables(
+            user_id,
+            rank_token,
+            max_id=max_id,
+            order=order,
+            query_profile=query_profile,
+        )
         if exclude_field_is_favorite is not None:
             variables["exclude_field_is_favorite"] = exclude_field_is_favorite
-        if max_id is not None:
-            variables["max_id"] = max_id
-        if order is not None:
-            variables["order"] = order
         if exclude_unused_fields is not None:
             variables["exclude_unused_fields"] = exclude_unused_fields
         return await self.private_graphql_query_request(
@@ -2547,7 +2689,7 @@ class UserMixin(ClientMixin):
         self,
         user_id: str,
         rank_token: str,
-        client_doc_id: str = "161046392817718486717479294775",
+        client_doc_id: str = FOLLOWING_LIST_CLIENT_DOC_ID,
         max_id: Optional[Union[str, int]] = None,
         priority: Optional[str] = None,
         order: Optional[FOLLOWERS_ORDER] = None,
@@ -2555,6 +2697,7 @@ class UserMixin(ClientMixin):
         exclude_unused_fields: Optional[bool] = None,
         skip_preview_hashtags: bool = True,
         skip_hashtag_count: bool = True,
+        query_profile: FOLLOW_LIST_QUERY_PROFILE = "canonical",
     ) -> dict:
         """
         Private-side ``FollowingList`` GraphQL query.
@@ -2562,37 +2705,17 @@ class UserMixin(ClientMixin):
         Mirror of ``private_graphql_followers_list`` for the following
         edge — root field ``xdt_api__v1__friendships__following``.
         """
-        request_data = {
-            "search_surface": "follow_list_page",
-            "rank_token": rank_token,
-            "includes_hashtags": True,
-        }
-        variables = {
-            "user_id": str(user_id),
-            "skip_use_clickable_see_more": True,
-            "skip_preview_hashtags": skip_preview_hashtags,
-            "skip_should_limit_list_of_followers": True,
-            "skip_pending_admins": True,
-            "skip_more_groups_available": True,
-            "skip_friendship_followers_fields": False,
-            "request_data": request_data,
-            "skip_page_size": True,
-            "skip_friend_requests": True,
-            "skip_big_list": True,
-            "query": "",
-            "include_profile_update_info": True,
-            "skip_suggested_users": True,
-            "include_unseen_count": True,
-            "skip_has_more": True,
-            "enable_groups": True,
-            "skip_hashtag_count": skip_hashtag_count,
-        }
+        variables = _following_list_variables(
+            user_id,
+            rank_token,
+            max_id=max_id,
+            order=order,
+            query_profile=query_profile,
+            skip_preview_hashtags=skip_preview_hashtags,
+            skip_hashtag_count=skip_hashtag_count,
+        )
         if exclude_field_is_favorite is not None:
             variables["exclude_field_is_favorite"] = exclude_field_is_favorite
-        if max_id is not None:
-            variables["max_id"] = max_id
-        if order is not None:
-            variables["order"] = order
         if exclude_unused_fields is not None:
             variables["exclude_unused_fields"] = exclude_unused_fields
         return await self.private_graphql_query_request(
