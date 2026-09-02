@@ -46,7 +46,11 @@ class UserMixinRegressionTestCase(unittest.IsolatedAsyncioTestCase):
             }
         )
 
-        user = await client.user_info_by_id_public_relay("25025320", " @Instagram ")
+        user = await client.user_info_by_id_public_relay(
+            "25025320",
+            " @Instagram ",
+            expected_request_count=2,
+        )
 
         self.assertEqual(user.pk, "25025320")
         self.assertEqual(user.username, "instagram")
@@ -70,6 +74,7 @@ class UserMixinRegressionTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(request.kwargs["referer"], "https://www.instagram.com/instagram/")
         self.assertEqual(request.kwargs["friendly_name"], PUBLIC_WEB_PROFILE_FRIENDLY_NAME)
         self.assertEqual(request.kwargs["retries_count"], 1)
+        self.assertEqual(request.kwargs["expected_request_count"], 2)
 
     def test_current_followers_document_candidate_is_explicit_and_pinned(self):
         self.assertRegex(FOLLOWERS_LIST_CURRENT_CLIENT_DOC_ID, r"^[0-9]{20,40}$")
