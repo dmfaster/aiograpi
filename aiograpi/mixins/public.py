@@ -5,6 +5,7 @@ import re
 import time
 from pathlib import Path
 from typing import Any, Dict, Literal, Optional
+from urllib.parse import parse_qs, urlparse
 
 import orjson
 
@@ -34,6 +35,9 @@ from aiograpi.utils.timing import random_delay
 PublicTransport = Literal["requests", "curl"]
 PUBLIC_WEB_APP_ID = "936619743392459"
 PUBLIC_WEB_ASBD_ID = "359341"
+PUBLIC_WEB_RELAY_CONTEXT_TTL_SECONDS = 15 * 60
+PUBLIC_WEB_RELAY_PROFILE_CONTROLLER = "XPolarisProfileController"
+PUBLIC_WEB_RELAY_PROFILE_ROUTE = "comet.igweb.PolarisLoggedOutDesktopWWWProfileRoute"
 
 
 class PublicRequestMixin(ClientMixin):
@@ -62,6 +66,11 @@ class PublicRequestMixin(ClientMixin):
     public_accept_language = "en-US"
 
     def __init__(self, *args, **kwargs):
+        self._public_web_relay_context: Optional[Dict[str, Any]] = None
+        self._public_web_relay_request_sequence = 0
+        self.last_public_web_relay_request_count = 0
+        self.last_public_web_relay_response_bytes = 0
+        self.last_public_web_relay_bootstrap_bytes = 0
         self.public_transport = self._normalize_public_transport(
             kwargs.pop("public_transport", getattr(self, "public_transport", self.public_transport))
         )
@@ -135,6 +144,23 @@ class PublicRequestMixin(ClientMixin):
         self.public.headers.update(old_headers)
         if old_cookies:
             self.public.set_cookies(old_cookies)
+        self.clear_public_web_relay_context()
+
+    def clear_public_web_relay_context(self) -> None:
+        """Discard short-lived anonymous Relay metadata after transport changes or failures."""
+
+        self._public_web_relay_context = None
+        self._public_web_relay_request_sequence = 0
+
+    @property
+    def public_web_relay_context_ready(self) -> bool:
+        context = self._public_web_relay_context
+        if not isinstance(context, dict):
+            return False
+        fetched_at = context.get("fetched_at")
+        return isinstance(fetched_at, (int, float)) and (
+            time.monotonic() - fetched_at < PUBLIC_WEB_RELAY_CONTEXT_TTL_SECONDS
+        )
 
     async def public_head(self, url: str, follow_redirects: bool = False):
         """
@@ -426,6 +452,273 @@ class PublicRequestMixin(ClientMixin):
             return match.group(1)
         match = re.search(r'"LSD",\[\],\{"token":"([^"]+)"', html)
         return match.group(1) if match else None
+
+    @staticmethod
+    def _extract_public_web_relay_context(html: str) -> Dict[str, Any]:
+        """Parse the bounded anonymous Relay context embedded in a profile page.
+
+        Instagram rotates these values with each web deployment. Keeping them
+        out of source avoids stale hard-coded revisions while strict shape
+        checks prevent arbitrary page content from becoming request metadata.
+        Tokens stay only in memory and are never logged.
+        """
+
+        if not isinstance(html, str) or not html or len(html) > 5_000_000:
+            raise ClientGraphqlError("Invalid public Relay bootstrap document")
+        eqmc_match = re.search(
+            r'<script[^>]*\bid=["\']__eqmc["\'][^>]*>(.*?)</script>',
+            html,
+            re.DOTALL,
+        )
+        if not eqmc_match:
+            raise ClientGraphqlError("Public Relay bootstrap metadata is missing")
+        try:
+            eqmc = json.loads(eqmc_match.group(1))
+        except (TypeError, ValueError) as error:
+            raise ClientGraphqlError("Public Relay bootstrap metadata is invalid") from error
+
+        site_marker = '["SiteData",[], '
+        site_start = html.find(site_marker)
+        if site_start < 0:
+            site_marker = '["SiteData",[],'
+            site_start = html.find(site_marker)
+        if site_start < 0:
+            raise ClientGraphqlError("Public Relay site metadata is missing")
+        try:
+            site_data, _ = json.JSONDecoder().raw_decode(html[site_start + len(site_marker) :])
+        except (TypeError, ValueError) as error:
+            raise ClientGraphqlError("Public Relay site metadata is invalid") from error
+        if not isinstance(eqmc, dict) or not isinstance(site_data, dict):
+            raise ClientGraphqlError("Public Relay bootstrap shape is invalid")
+
+        controller = str(eqmc.get("s") or "")
+        lsd = str(eqmc.get("l") or "")
+        hsi = str(eqmc.get("e") or "")
+        query = parse_qs(urlparse(str(eqmc.get("u") or "")).query)
+        jazoest = str((query.get("jazoest") or [""])[0])
+        site_hsi = str(site_data.get("hsi") or "")
+        haste_session = str(site_data.get("haste_session") or "")
+        server_revision = str(site_data.get("server_revision") or "")
+        spin_revision = str(site_data.get("__spin_r") or "")
+        spin_timestamp = str(site_data.get("__spin_t") or "")
+        spin_branch = str(site_data.get("__spin_b") or "")
+        comet_request = str(site_data.get("comet_env") or "")
+        device_pixel_ratio = str(site_data.get("pr") or "1")
+
+        if controller != PUBLIC_WEB_RELAY_PROFILE_CONTROLLER:
+            raise ClientGraphqlError("Unsupported public Relay controller")
+        if not re.fullmatch(r"[A-Za-z0-9_-]{10,100}", lsd):
+            raise ClientGraphqlError("Public Relay LSD token is invalid")
+        if not re.fullmatch(r"[0-9]{8,30}", hsi) or hsi != site_hsi:
+            raise ClientGraphqlError("Public Relay HSI metadata is invalid")
+        if not re.fullmatch(r"[0-9]{4,20}", jazoest):
+            raise ClientGraphqlError("Public Relay jazoest metadata is invalid")
+        if not re.fullmatch(r"[A-Za-z0-9._:-]{1,200}", haste_session):
+            raise ClientGraphqlError("Public Relay haste session is invalid")
+        if not re.fullmatch(r"[0-9]{1,20}", server_revision):
+            raise ClientGraphqlError("Public Relay server revision is invalid")
+        if not re.fullmatch(r"[0-9]{1,20}", spin_revision):
+            raise ClientGraphqlError("Public Relay spin revision is invalid")
+        if not re.fullmatch(r"[0-9]{1,20}", spin_timestamp):
+            raise ClientGraphqlError("Public Relay spin timestamp is invalid")
+        if not re.fullmatch(r"[A-Za-z0-9._-]{1,40}", spin_branch):
+            raise ClientGraphqlError("Public Relay spin branch is invalid")
+        if not re.fullmatch(r"[0-9]{1,3}", comet_request):
+            raise ClientGraphqlError("Public Relay comet environment is invalid")
+        if not re.fullmatch(r"[0-9]+(?:\.[0-9]+)?", device_pixel_ratio):
+            device_pixel_ratio = "1"
+
+        return {
+            "lsd": lsd,
+            "jazoest": jazoest,
+            "hsi": hsi,
+            "haste_session": haste_session,
+            "server_revision": server_revision,
+            "spin_revision": spin_revision,
+            "spin_timestamp": spin_timestamp,
+            "spin_branch": spin_branch,
+            "comet_request": comet_request,
+            "device_pixel_ratio": device_pixel_ratio,
+            "fetched_at": time.monotonic(),
+        }
+
+    @staticmethod
+    def _decode_public_web_relay_response(text: str) -> Dict[str, Any]:
+        if not isinstance(text, str) or not text or len(text) > 10_000_000:
+            raise ClientGraphqlError("Invalid public Relay response")
+        stripped = text.lstrip()
+        if stripped.startswith("for (;;);"):
+            stripped = stripped[len("for (;;);") :].lstrip()
+        try:
+            payload = json.loads(stripped)
+        except (TypeError, ValueError) as error:
+            raise ClientGraphqlError("Invalid public Relay JSON response") from error
+        if not isinstance(payload, dict):
+            raise ClientGraphqlError("Invalid public Relay response shape")
+        return payload
+
+    @staticmethod
+    def _relay_request_token(sequence: int) -> str:
+        alphabet = "0123456789abcdefghijklmnopqrstuvwxyz"
+        value = max(1, int(sequence))
+        token = ""
+        while value:
+            value, remainder = divmod(value, 36)
+            token = alphabet[remainder] + token
+        return token
+
+    async def public_web_relay_request(
+        self,
+        doc_id: str,
+        variables: Dict[str, Any],
+        *,
+        referer: str,
+        friendly_name: str,
+        retries_count: int = 1,
+    ) -> Dict[str, Any]:
+        """Execute one anonymous Instagram web Relay operation.
+
+        A cold public session performs one profile-page bootstrap followed by
+        one Relay POST. Warm sessions reuse the short-lived metadata and send
+        only the POST. This method never retries provider traffic implicitly;
+        durable callers must reserve and account for every HTTP attempt.
+        """
+
+        normalized_doc_id = str(doc_id or "").strip()
+        normalized_friendly_name = str(friendly_name or "").strip()
+        if self.public_transport != "curl":
+            raise ClientGraphqlError(
+                "Anonymous public Relay requires the curl transport for a consistent browser fingerprint"
+            )
+        if not re.fullmatch(r"[0-9]{8,40}", normalized_doc_id):
+            raise ValueError("doc_id must be an 8-40 digit value")
+        if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,127}", normalized_friendly_name):
+            raise ValueError("friendly_name contains unsupported characters")
+        parsed_referer = urlparse(str(referer or "").strip())
+        if parsed_referer.scheme != "https" or parsed_referer.netloc not in {
+            "instagram.com",
+            "www.instagram.com",
+        }:
+            raise ValueError("referer must be an Instagram HTTPS URL")
+        cookies = self.public.cookies_dict()
+        if cookies.get("sessionid") or cookies.get("ds_user_id"):
+            raise ClientGraphqlError("Anonymous public Relay transport contains authenticated cookies")
+
+        self.last_public_web_relay_request_count = 0
+        self.last_public_web_relay_response_bytes = 0
+        self.last_public_web_relay_bootstrap_bytes = 0
+        if not self.public_web_relay_context_ready:
+            self.last_public_web_relay_request_count += 1
+            bootstrap_html = await self.public_request(
+                referer,
+                return_json=False,
+                retries_count=retries_count,
+            )
+            bootstrap_response = self.last_public_response
+            bootstrap_content = getattr(bootstrap_response, "content", b"")
+            self.last_public_web_relay_bootstrap_bytes = (
+                len(bootstrap_content) if isinstance(bootstrap_content, bytes) else len(bootstrap_html.encode())
+            )
+            self.last_public_web_relay_response_bytes += self.last_public_web_relay_bootstrap_bytes
+            self._public_web_relay_context = self._extract_public_web_relay_context(bootstrap_html)
+
+        context = self._public_web_relay_context
+        if not isinstance(context, dict):
+            raise ClientGraphqlError("Public Relay bootstrap context is unavailable")
+        self._public_web_relay_request_sequence += 1
+        data = {
+            "av": "0",
+            "__d": "www",
+            "__user": "0",
+            "__a": "1",
+            "__req": self._relay_request_token(self._public_web_relay_request_sequence),
+            "__hs": context["haste_session"],
+            "dpr": context["device_pixel_ratio"],
+            "__ccg": "EXCELLENT",
+            "__rev": context["server_revision"],
+            "__s": "",
+            "__hsi": context["hsi"],
+            "__dyn": "",
+            "__csr": "",
+            "__hblp": "",
+            "__hsdp": "",
+            "__sjsp": "",
+            "__crn": PUBLIC_WEB_RELAY_PROFILE_ROUTE,
+            "__comet_req": context["comet_request"],
+            "lsd": context["lsd"],
+            "jazoest": context["jazoest"],
+            "__spin_r": context["spin_revision"],
+            "__spin_b": context["spin_branch"],
+            "__spin_t": context["spin_timestamp"],
+            "fb_api_caller_class": "RelayModern",
+            "fb_api_req_friendly_name": normalized_friendly_name,
+            "server_timestamps": "true",
+            "variables": json.dumps(variables, separators=(",", ":")),
+            "doc_id": normalized_doc_id,
+        }
+        headers = {
+            "Accept": "*/*",
+            "Accept-Language": self.public_accept_language,
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Origin": "https://www.instagram.com",
+            "Priority": "u=1, i",
+            "Referer": referer,
+            "Sec-Ch-Prefers-Color-Scheme": "light",
+            "Sec-Ch-Ua": '"Chromium";v="136", "Not.A/Brand";v="24"',
+            "Sec-Ch-Ua-Mobile": "?0",
+            "Sec-Ch-Ua-Model": '""',
+            "Sec-Ch-Ua-Platform": '"Linux"',
+            "Sec-Ch-Ua-Platform-Version": '""',
+            "Sec-Fetch-Dest": "empty",
+            "Sec-Fetch-Mode": "cors",
+            "Sec-Fetch-Site": "same-origin",
+            "User-Agent": self.public_user_agent,
+            "X-ASBD-ID": PUBLIC_WEB_ASBD_ID,
+            "X-FB-Friendly-Name": normalized_friendly_name,
+            "X-FB-LSD": context["lsd"],
+            "X-IG-App-ID": PUBLIC_WEB_APP_ID,
+            "X-IG-Max-Touch-Points": "0",
+            "X-Requested-With": "XMLHttpRequest",
+        }
+        csrftoken = str(self.public.cookies_dict().get("csrftoken") or "").strip()
+        if csrftoken:
+            headers["X-CSRFToken"] = csrftoken
+
+        relay_bytes_accounted = False
+        try:
+            self.last_public_web_relay_request_count += 1
+            response_text = await self.public_request(
+                self.GRAPHQL_PUBLIC_WEB_API_URL,
+                data=data,
+                headers=headers,
+                update_headers=False,
+                return_json=False,
+                retries_count=retries_count,
+            )
+            relay_content = getattr(self.last_public_response, "content", b"")
+            relay_bytes = len(relay_content) if isinstance(relay_content, bytes) else len(response_text.encode())
+            self.last_public_web_relay_response_bytes += relay_bytes
+            relay_bytes_accounted = True
+            body_json = self._decode_public_web_relay_response(response_text)
+            if body_json.get("errors") or body_json.get("data") is None:
+                self.clear_public_web_relay_context()
+                raise ClientGraphqlError(
+                    "Public Relay operation returned no data",
+                    response=self.last_public_response,
+                )
+            return body_json["data"]
+        except Exception:
+            # HTTP failures still consumed provider bandwidth. Capture it when
+            # the transport made a response available, without double-counting
+            # a decoded Relay error that was already measured above.
+            if not relay_bytes_accounted:
+                failed_content = getattr(self.last_public_response, "content", b"")
+                if isinstance(failed_content, bytes):
+                    self.last_public_web_relay_response_bytes += len(failed_content)
+            # A stale web deployment context must not survive into a durable
+            # retry. The next caller will explicitly budget a fresh bootstrap.
+            self.clear_public_web_relay_context()
+            raise
 
     async def public_doc_id_graphql_request(
         self,
