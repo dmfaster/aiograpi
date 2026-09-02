@@ -110,6 +110,41 @@ class PublicRequestRegressionTestCase(unittest.IsolatedAsyncioTestCase):
 
         client.public_request.assert_not_awaited()
 
+    async def test_public_web_relay_warm_budget_fails_locally_if_context_is_missing(self):
+        client = Client(public_transport="curl")
+        client.public_request = AsyncMock()
+
+        with self.assertRaisesRegex(ClientGraphqlError, "warm Relay context"):
+            await client.public_web_relay_request(
+                "28036671149327607",
+                {"id": "123"},
+                referer="https://www.instagram.com/example/",
+                friendly_name="PolarisProfilePageContentQuery",
+                expected_request_count=1,
+            )
+
+        client.public_request.assert_not_awaited()
+        self.assertEqual(client.last_public_web_relay_request_count, 0)
+
+    async def test_public_web_relay_cold_budget_forces_exact_two_request_refresh(self):
+        client = Client(public_transport="curl")
+        client._public_web_relay_context = {
+            "fetched_at": time.monotonic(),
+        }
+        response = '{"data":{"user":{"id":"123"}}}'
+        client.public_request = AsyncMock(side_effect=[self._relay_bootstrap_html(), response])
+
+        await client.public_web_relay_request(
+            "28036671149327607",
+            {"id": "123"},
+            referer="https://www.instagram.com/example/",
+            friendly_name="PolarisProfilePageContentQuery",
+            expected_request_count=2,
+        )
+
+        self.assertEqual(client.public_request.await_count, 2)
+        self.assertEqual(client.last_public_web_relay_request_count, 2)
+
     async def test_proxy_change_discards_public_web_relay_context(self):
         client = Client(public_transport="curl")
         client._public_web_relay_context = {

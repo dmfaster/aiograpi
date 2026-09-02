@@ -16,6 +16,7 @@ starting with 1.0.0.
 ### Fixed
 
 - Cleared cached anonymous Relay metadata whenever a proxy or public transport changes and after any failed operation, preventing cross-proxy context reuse and stale-operation retry loops.
+- Added an exact one-or-two-request execution contract so durable callers can reserve warm and cold provider traffic without a context-expiry race or hidden bootstrap.
 
 ## [1.12.13] - 2026-08-21
 

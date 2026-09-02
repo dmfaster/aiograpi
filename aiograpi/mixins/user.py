@@ -473,7 +473,13 @@ class UserMixin(ClientMixin):
             raise UserNotFound("User not found", user_id=user_id)
         return extract_user_v1(self._normalize_polaris_profile(user_data))
 
-    async def user_info_by_id_public_relay(self, user_id: str, username: str) -> User:
+    async def user_info_by_id_public_relay(
+        self,
+        user_id: str,
+        username: str,
+        *,
+        expected_request_count: Optional[int] = None,
+    ) -> User:
         """Fetch one full public profile through the anonymous web Relay surface.
 
         The numeric id is the stable query identity and the username is used
@@ -503,6 +509,7 @@ class UserMixin(ClientMixin):
             referer=f"https://www.instagram.com/{normalized_username}/",
             friendly_name=PUBLIC_WEB_PROFILE_FRIENDLY_NAME,
             retries_count=1,
+            expected_request_count=expected_request_count,
         )
         user_data = (data or {}).get("user")
         if not isinstance(user_data, dict) or not user_data:

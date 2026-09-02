@@ -575,6 +575,7 @@ class PublicRequestMixin(ClientMixin):
         referer: str,
         friendly_name: str,
         retries_count: int = 1,
+        expected_request_count: Optional[int] = None,
     ) -> Dict[str, Any]:
         """Execute one anonymous Instagram web Relay operation.
 
@@ -586,6 +587,8 @@ class PublicRequestMixin(ClientMixin):
 
         normalized_doc_id = str(doc_id or "").strip()
         normalized_friendly_name = str(friendly_name or "").strip()
+        if expected_request_count not in {None, 1, 2}:
+            raise ValueError("expected_request_count must be 1, 2, or None")
         if self.public_transport != "curl":
             raise ClientGraphqlError(
                 "Anonymous public Relay requires the curl transport for a consistent browser fingerprint"
@@ -604,10 +607,21 @@ class PublicRequestMixin(ClientMixin):
         if cookies.get("sessionid") or cookies.get("ds_user_id"):
             raise ClientGraphqlError("Anonymous public Relay transport contains authenticated cookies")
 
+        # Durable callers reserve provider requests before touching Instagram.
+        # Pinning the expected count makes that reservation exact: a warm
+        # one-request reservation can never silently bootstrap, while a cold
+        # two-request reservation deliberately refreshes even if an old
+        # context became visible between planning and execution.
+        if expected_request_count == 2:
+            self.clear_public_web_relay_context()
+        context_ready = self.public_web_relay_context_ready
+        if expected_request_count == 1 and not context_ready:
+            raise ClientGraphqlError("Reserved warm Relay context is unavailable")
+
         self.last_public_web_relay_request_count = 0
         self.last_public_web_relay_response_bytes = 0
         self.last_public_web_relay_bootstrap_bytes = 0
-        if not self.public_web_relay_context_ready:
+        if not context_ready:
             self.last_public_web_relay_request_count += 1
             bootstrap_html = await self.public_request(
                 referer,
