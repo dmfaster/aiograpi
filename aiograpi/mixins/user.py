@@ -68,6 +68,8 @@ FOLLOWERS_ORDERS = ("date_followed_latest", "date_followed_earliest")
 USER_WEB_PROFILE_DOC_ID = "26762473490008061"
 USER_INFO_V2_DOC_ID = "25980296051578533"
 USER_INFO_BY_USERNAME_V2_DOC_ID = "26347858941511777"
+PUBLIC_WEB_PROFILE_DOC_ID = "28036671149327607"
+PUBLIC_WEB_PROFILE_FRIENDLY_NAME = "PolarisProfilePageContentQuery"
 FOLLOWERS_LIST_CLIENT_DOC_ID = "28479704797510738576165798526"
 # Candidate extracted from the current Android release family. Keep the
 # production default pinned above until a bounded account/proxy canary proves
@@ -471,6 +473,42 @@ class UserMixin(ClientMixin):
             raise UserNotFound("User not found", user_id=user_id)
         return extract_user_v1(self._normalize_polaris_profile(user_data))
 
+    async def user_info_by_id_public_relay(self, user_id: str, username: str) -> User:
+        """Fetch one full public profile through the anonymous web Relay surface.
+
+        The numeric id is the stable query identity and the username is used
+        only to bootstrap Instagram's current anonymous profile-page context.
+        The caller owns retries and must account for two HTTP requests on a
+        cold public session and one request while that context remains warm.
+        """
+
+        normalized_user_id = str(user_id or "").strip()
+        normalized_username = self._normalize_username(username)
+        if not normalized_user_id.isdigit():
+            raise ValueError("user_id must be numeric")
+        if not normalized_username or not re.fullmatch(r"[a-z0-9._]{1,30}", normalized_username):
+            raise ValueError("username contains unsupported characters")
+        variables = {
+            "id": normalized_user_id,
+            "enable_integrity_filters": True,
+            "__relay_internal__pv__PolarisCannesGuardianExperienceEnabledrelayprovider": False,
+            "__relay_internal__pv__PolarisCASB976ProfileEnabledrelayprovider": False,
+            "__relay_internal__pv__PolarisWebSchoolsEnabledrelayprovider": False,
+            "__relay_internal__pv__PolarisRepostsConsumptionEnabledrelayprovider": False,
+            "__relay_internal__pv__PolarisShortDramaEnabledrelayprovider": False,
+        }
+        data = await self.public_web_relay_request(
+            PUBLIC_WEB_PROFILE_DOC_ID,
+            variables,
+            referer=f"https://www.instagram.com/{normalized_username}/",
+            friendly_name=PUBLIC_WEB_PROFILE_FRIENDLY_NAME,
+            retries_count=1,
+        )
+        user_data = (data or {}).get("user")
+        if not isinstance(user_data, dict) or not user_data:
+            raise UserNotFound("User not found", user_id=normalized_user_id, username=normalized_username)
+        return extract_user_v1(self._normalize_polaris_profile(user_data))
+
     async def user_info_by_username_v2_gql(self, username: str) -> User:
         """
         Get user object via the new doc_id-based GraphQL endpoints.
@@ -517,6 +555,13 @@ class UserMixin(ClientMixin):
             normalized["is_business"] = normalized["is_business_account"]
         if "category" not in normalized and "category_name" in normalized:
             normalized["category"] = normalized["category_name"]
+        # Logged-out Relay intentionally redacts a small number of counters as
+        # null. aiograpi's User contract is numeric; zero preserves the
+        # existing "not supplied" fallback used by public profile extraction
+        # and downstream merges retain any larger previously observed value.
+        for field in ("media_count", "follower_count", "following_count"):
+            if normalized.get(field) is None:
+                normalized[field] = 0
         # PolarisProfilePageContentQuery puts viewer-relationship flags
         # under friendship_status; aiograpi User doesn't track them, but
         # flatten anyway in case future fields land.

@@ -17,6 +17,8 @@ from aiograpi.mixins.user import (
     PUBLIC_WEB_FOLLOWERS_DOC_ID,
     PUBLIC_WEB_FOLLOWERS_FRIENDLY_NAME,
     PUBLIC_WEB_FOLLOWING_CONNECTION,
+    PUBLIC_WEB_PROFILE_DOC_ID,
+    PUBLIC_WEB_PROFILE_FRIENDLY_NAME,
     USER_INFO_BY_USERNAME_V2_DOC_ID,
     USER_INFO_V2_DOC_ID,
     UserMixin,
@@ -25,6 +27,50 @@ from aiograpi.types import UserShort
 
 
 class UserMixinRegressionTestCase(unittest.IsolatedAsyncioTestCase):
+    async def test_user_info_by_id_public_relay_uses_current_anonymous_profile_operation(self):
+        client = Client(public_transport="curl")
+        client.public_web_relay_request = AsyncMock(
+            return_value={
+                "user": {
+                    "id": "25025320",
+                    "username": "instagram",
+                    "full_name": "Instagram",
+                    "is_private": False,
+                    "is_verified": True,
+                    "media_count": None,
+                    "follower_count": 2,
+                    "following_count": 3,
+                    "is_business_account": False,
+                    "profile_pic_url": "https://example.com/pic.jpg",
+                }
+            }
+        )
+
+        user = await client.user_info_by_id_public_relay("25025320", " @Instagram ")
+
+        self.assertEqual(user.pk, "25025320")
+        self.assertEqual(user.username, "instagram")
+        self.assertEqual(user.media_count, 0)
+        request = client.public_web_relay_request.await_args
+        self.assertEqual(request.args[0], PUBLIC_WEB_PROFILE_DOC_ID)
+        self.assertEqual(request.args[1]["id"], "25025320")
+        self.assertNotIn("render_surface", request.args[1])
+        self.assertEqual(
+            set(request.args[1]),
+            {
+                "id",
+                "enable_integrity_filters",
+                "__relay_internal__pv__PolarisCannesGuardianExperienceEnabledrelayprovider",
+                "__relay_internal__pv__PolarisCASB976ProfileEnabledrelayprovider",
+                "__relay_internal__pv__PolarisWebSchoolsEnabledrelayprovider",
+                "__relay_internal__pv__PolarisRepostsConsumptionEnabledrelayprovider",
+                "__relay_internal__pv__PolarisShortDramaEnabledrelayprovider",
+            },
+        )
+        self.assertEqual(request.kwargs["referer"], "https://www.instagram.com/instagram/")
+        self.assertEqual(request.kwargs["friendly_name"], PUBLIC_WEB_PROFILE_FRIENDLY_NAME)
+        self.assertEqual(request.kwargs["retries_count"], 1)
+
     def test_current_followers_document_candidate_is_explicit_and_pinned(self):
         self.assertRegex(FOLLOWERS_LIST_CURRENT_CLIENT_DOC_ID, r"^[0-9]{20,40}$")
 

@@ -129,8 +129,11 @@ class Client(
         self.init()
 
     def set_proxy(self, dsn: Optional[str]):
+        previous_public_proxy = getattr(getattr(self, "public", None), "proxy", None)
         if not dsn:
             self.public.proxy = self.private.proxy = self.graphql.proxy = None
+            if previous_public_proxy:
+                self.clear_public_web_relay_context()
             return False
         assert isinstance(dsn, str), f'Proxy must been string (URL), but now "{dsn}" ({type(dsn)})'
         self.proxy = dsn
@@ -139,6 +142,8 @@ class Client(
             href=self.proxy,
         )
         self.public.proxy = self.private.proxy = self.graphql.proxy = proxy_href
+        if previous_public_proxy != proxy_href:
+            self.clear_public_web_relay_context()
         return True
 
     async def aclose(self) -> None:

@@ -1,13 +1,130 @@
+import time
 import unittest
 from unittest.mock import AsyncMock, Mock
 
 import orjson
 
 from aiograpi import Client
-from aiograpi.exceptions import ClientLoginRequired
+from aiograpi.exceptions import ClientGraphqlError, ClientLoginRequired
 
 
 class PublicRequestRegressionTestCase(unittest.IsolatedAsyncioTestCase):
+    @staticmethod
+    def _relay_bootstrap_html():
+        return (
+            '<html><script id="__eqmc" type="application/json">'
+            '{"u":"/ajax/qm/?__a=1&__user=0&__comet_req=7&jazoest=26582",'
+            '"e":"7335888108907652597","s":"XPolarisProfileController",'
+            '"w":0,"f":null,"l":"6b2800R9u4biJOYjcdXFEIabc"}'
+            '</script><script type="application/json">'
+            '["SiteData",[],{"haste_session":"19999.HYP:instagram_web_pkg.2.1..0.1",'
+            '"server_revision":1011444902,"hsi":"7335888108907652597",'
+            '"__spin_r":1011444902,"__spin_b":"trunk","__spin_t":1708019550,'
+            '"comet_env":7,"pr":1},123]'
+            "</script></html>"
+        )
+
+    async def test_public_web_relay_bootstraps_once_then_reuses_live_context(self):
+        client = Client(public_transport="curl")
+        response = 'for (;;);{"data":{"user":{"id":"123"}}}'
+        client.public_request = AsyncMock(side_effect=[self._relay_bootstrap_html(), response, response])
+
+        first = await client.public_web_relay_request(
+            "28036671149327607",
+            {"id": "123"},
+            referer="https://www.instagram.com/example/",
+            friendly_name="PolarisProfilePageContentQuery",
+        )
+
+        self.assertEqual(first["user"]["id"], "123")
+        self.assertTrue(client.public_web_relay_context_ready)
+        self.assertEqual(client.last_public_web_relay_request_count, 2)
+        bootstrap_call, relay_call = client.public_request.await_args_list[:2]
+        self.assertFalse(bootstrap_call.kwargs["return_json"])
+        self.assertEqual(relay_call.args[0], client.GRAPHQL_PUBLIC_WEB_API_URL)
+        self.assertEqual(relay_call.kwargs["retries_count"], 1)
+        self.assertEqual(relay_call.kwargs["data"]["__a"], "1")
+        self.assertEqual(relay_call.kwargs["data"]["__hsi"], "7335888108907652597")
+        self.assertEqual(relay_call.kwargs["data"]["jazoest"], "26582")
+        self.assertEqual(relay_call.kwargs["data"]["doc_id"], "28036671149327607")
+        self.assertEqual(relay_call.kwargs["headers"]["X-FB-LSD"], "6b2800R9u4biJOYjcdXFEIabc")
+        self.assertEqual(relay_call.kwargs["headers"]["Sec-Fetch-Site"], "same-origin")
+        self.assertEqual(relay_call.kwargs["headers"]["Sec-Ch-Ua-Mobile"], "?0")
+        self.assertEqual(relay_call.kwargs["headers"]["X-IG-Max-Touch-Points"], "0")
+
+        second = await client.public_web_relay_request(
+            "28036671149327607",
+            {"id": "124"},
+            referer="https://www.instagram.com/another.example/",
+            friendly_name="PolarisProfilePageContentQuery",
+        )
+
+        self.assertEqual(second["user"]["id"], "123")
+        self.assertEqual(client.last_public_web_relay_request_count, 1)
+        self.assertEqual(client.public_request.await_count, 3)
+        self.assertEqual(client.public_request.await_args.kwargs["data"]["__req"], "2")
+
+    async def test_public_web_relay_rejects_authenticated_cookie_state(self):
+        client = Client(public_transport="curl")
+        client.public.set_cookies({"sessionid": "must-not-leak"})
+        client.public_request = AsyncMock()
+
+        with self.assertRaises(ClientGraphqlError):
+            await client.public_web_relay_request(
+                "28036671149327607",
+                {"id": "123"},
+                referer="https://www.instagram.com/example/",
+                friendly_name="PolarisProfilePageContentQuery",
+            )
+
+        client.public_request.assert_not_awaited()
+
+    async def test_public_web_relay_failure_clears_cached_context_without_hidden_retry(self):
+        client = Client(public_transport="curl")
+        client.public_request = AsyncMock(
+            side_effect=[self._relay_bootstrap_html(), '{"errors":[{"message":"rotated"}]}']
+        )
+
+        with self.assertRaises(ClientGraphqlError):
+            await client.public_web_relay_request(
+                "28036671149327607",
+                {"id": "123"},
+                referer="https://www.instagram.com/example/",
+                friendly_name="PolarisProfilePageContentQuery",
+            )
+
+        self.assertFalse(client.public_web_relay_context_ready)
+        self.assertEqual(client.public_request.await_count, 2)
+
+    async def test_public_web_relay_requires_browser_impersonating_transport(self):
+        client = Client(public_transport="requests")
+        client.public_request = AsyncMock()
+
+        with self.assertRaises(ClientGraphqlError):
+            await client.public_web_relay_request(
+                "28036671149327607",
+                {"id": "123"},
+                referer="https://www.instagram.com/example/",
+                friendly_name="PolarisProfilePageContentQuery",
+            )
+
+        client.public_request.assert_not_awaited()
+
+    async def test_proxy_change_discards_public_web_relay_context(self):
+        client = Client(public_transport="curl")
+        client._public_web_relay_context = {
+            "fetched_at": time.monotonic(),
+        }
+
+        client.set_proxy("http://first.invalid:10001")
+        self.assertFalse(client.public_web_relay_context_ready)
+
+        client._public_web_relay_context = {
+            "fetched_at": time.monotonic(),
+        }
+        client.set_proxy("http://second.invalid:10002")
+        self.assertFalse(client.public_web_relay_context_ready)
+
     async def test_public_request_maps_challenge_redirect_html_to_login_required(self):
         client = Client()
         client.last_response_ts = 0

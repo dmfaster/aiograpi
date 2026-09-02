@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 starting with 1.0.0.
 
+## [Unreleased]
+
+### Added
+
+- Added a cookie-free public profile Relay transport that derives Instagram's rotating anonymous web context from the live profile page, reuses it per fixed proxy session, and exposes exact cold/warm request and byte counts for durable callers.
+- Added full-profile lookup by numeric Instagram user ID through the current `PolarisProfilePageContentQuery` operation without authenticated cookies or hidden retries.
+
+### Fixed
+
+- Cleared cached anonymous Relay metadata whenever a proxy or public transport changes and after any failed operation, preventing cross-proxy context reuse and stale-operation retry loops.
+
 ## [1.12.13] - 2026-08-21
 
 ### Fixed
