@@ -37,7 +37,10 @@ PUBLIC_WEB_APP_ID = "936619743392459"
 PUBLIC_WEB_ASBD_ID = "359341"
 PUBLIC_WEB_RELAY_CONTEXT_TTL_SECONDS = 15 * 60
 PUBLIC_WEB_RELAY_PROFILE_CONTROLLER = "XPolarisProfileController"
-PUBLIC_WEB_RELAY_PROFILE_ROUTE = "comet.igweb.PolarisLoggedOutDesktopWWWProfileRoute"
+# Instagram's current logged-out web profile route.  This identifier is part
+# of the Relay request envelope and can drift independently of the operation
+# document id; keep it centralized so a bounded canary can update both.
+PUBLIC_WEB_RELAY_PROFILE_ROUTE = "comet.igweb.PolarisProfileRoute"
 
 
 class PublicRequestMixin(ClientMixin):

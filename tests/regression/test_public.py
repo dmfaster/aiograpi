@@ -6,6 +6,7 @@ import orjson
 
 from aiograpi import Client
 from aiograpi.exceptions import ClientGraphqlError, ClientLoginRequired
+from aiograpi.mixins.public import PUBLIC_WEB_RELAY_PROFILE_ROUTE
 from aiograpi.mixins.user import PUBLIC_WEB_PROFILE_DOC_ID
 
 
@@ -68,6 +69,7 @@ class PublicRequestRegressionTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(relay_call.kwargs["data"]["__hsi"], "7335888108907652597")
         self.assertEqual(relay_call.kwargs["data"]["jazoest"], "26582")
         self.assertEqual(relay_call.kwargs["data"]["doc_id"], PUBLIC_WEB_PROFILE_DOC_ID)
+        self.assertEqual(relay_call.kwargs["data"]["__crn"], PUBLIC_WEB_RELAY_PROFILE_ROUTE)
         self.assertEqual(relay_call.kwargs["headers"]["X-FB-LSD"], "6b2800R9u4biJOYjcdXFEIabc")
         self.assertEqual(relay_call.kwargs["headers"]["Sec-Fetch-Site"], "same-origin")
         self.assertEqual(relay_call.kwargs["headers"]["Sec-Ch-Ua-Mobile"], "?0")
