@@ -447,10 +447,14 @@ class PublicRequestMixin(ClientMixin):
     def _extract_public_lsd_token(html: str) -> Optional[str]:
         if not html:
             return None
-        match = re.search(r'\["LSD",\[\],\{"token":"([^"]+)"\}', html)
-        if match:
-            return match.group(1)
-        match = re.search(r'"LSD",\[\],\{"token":"([^"]+)"', html)
+        # The bootstrap payload is emitted as a compact array in some
+        # deployments and with whitespace/newline separators in others. Keep
+        # this parser scoped to the named LSD entry rather than searching for
+        # arbitrary ``token`` keys in the document.
+        match = re.search(
+            r'\[\s*"LSD"\s*,\s*\[\s*\]\s*,\s*\{\s*"token"\s*:\s*"([^"\\]+)"',
+            html,
+        )
         return match.group(1) if match else None
 
     @staticmethod
@@ -466,7 +470,7 @@ class PublicRequestMixin(ClientMixin):
         if not isinstance(html, str) or not html or len(html) > 5_000_000:
             raise ClientGraphqlError("Invalid public Relay bootstrap document")
         eqmc_match = re.search(
-            r'<script[^>]*\bid=["\']__eqmc["\'][^>]*>(.*?)</script>',
+            r'<script[^>]*\bid\s*=\s*["\']__eqmc["\'][^>]*>(.*?)</script>',
             html,
             re.DOTALL,
         )
@@ -477,22 +481,24 @@ class PublicRequestMixin(ClientMixin):
         except (TypeError, ValueError) as error:
             raise ClientGraphqlError("Public Relay bootstrap metadata is invalid") from error
 
-        site_marker = '["SiteData",[], '
-        site_start = html.find(site_marker)
-        if site_start < 0:
-            site_marker = '["SiteData",[],'
-            site_start = html.find(site_marker)
-        if site_start < 0:
+        site_match = re.search(r'\[\s*"SiteData"\s*,\s*\[\s*\]\s*,\s*', html)
+        if not site_match:
             raise ClientGraphqlError("Public Relay site metadata is missing")
         try:
-            site_data, _ = json.JSONDecoder().raw_decode(html[site_start + len(site_marker) :])
+            site_data, _ = json.JSONDecoder().raw_decode(html[site_match.end() :])
         except (TypeError, ValueError) as error:
             raise ClientGraphqlError("Public Relay site metadata is invalid") from error
         if not isinstance(eqmc, dict) or not isinstance(site_data, dict):
             raise ClientGraphqlError("Public Relay bootstrap shape is invalid")
 
         controller = str(eqmc.get("s") or "")
+        # Recent logged-out pages keep the LSD value in the named bootstrap
+        # entry while ``__eqmc.l`` is null. Prefer the explicit ``l`` value
+        # when present, then fall back to the scoped LSD entry. Both values
+        # are validated below before becoming request metadata.
         lsd = str(eqmc.get("l") or "")
+        if not lsd:
+            lsd = str(PublicRequestMixin._extract_public_lsd_token(html) or "")
         hsi = str(eqmc.get("e") or "")
         query = parse_qs(urlparse(str(eqmc.get("u") or "")).query)
         jazoest = str((query.get("jazoest") or [""])[0])

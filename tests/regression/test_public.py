@@ -24,6 +24,26 @@ class PublicRequestRegressionTestCase(unittest.IsolatedAsyncioTestCase):
             "</script></html>"
         )
 
+    @staticmethod
+    def _modern_relay_bootstrap_html():
+        # Recent logged-out profile pages keep ``__eqmc.l`` null and emit the
+        # LSD token as a separate named bootstrap entry. They also vary the
+        # whitespace around the serialized SiteData array.
+        return (
+            '<html><script nonce="fixture" data-page="profile" id = "__eqmc" type="application/json">'
+            '{"u":"\\/ajax\\/qm\\/?__a=1&__user=0&__comet_req=7&jazoest=26317",'
+            '"e":"7560370528181878172","s":"XPolarisProfileController",'
+            '"w":0,"f":"fixture","l":null}'
+            '</script><script type="application/json">'
+            '["LSD", [], {"token":"AbbIbpXEk7LzHVDVddCAn7"}]'
+            '</script><script type="application/json">'
+            '["SiteData", [], {"haste_session":"20373.HYP:instagram_web_pkg.2.1...0",'
+            '"server_revision":1028323764,"hsi":"7560370528181878172",'
+            '"__spin_r":1028323764,"__spin_b":"trunk","__spin_t":17865068956001195,'
+            '"comet_env":7,"pr":1},317]'
+            "</script></html>"
+        )
+
     async def test_public_web_relay_bootstraps_once_then_reuses_live_context(self):
         client = Client(public_transport="curl")
         response = 'for (;;);{"data":{"user":{"id":"123"}}}'
@@ -63,6 +83,24 @@ class PublicRequestRegressionTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(client.last_public_web_relay_request_count, 1)
         self.assertEqual(client.public_request.await_count, 3)
         self.assertEqual(client.public_request.await_args.kwargs["data"]["__req"], "2")
+
+    async def test_public_web_relay_accepts_modern_null_eqmc_l_with_named_lsd_entry(self):
+        client = Client(public_transport="curl")
+        response = '{"data":{"user":{"id":"123"}}}'
+        client.public_request = AsyncMock(side_effect=[self._modern_relay_bootstrap_html(), response])
+
+        result = await client.public_web_relay_request(
+            "28036671149327607",
+            {"id": "123"},
+            referer="https://www.instagram.com/example/",
+            friendly_name="PolarisProfilePageContentQuery",
+        )
+
+        self.assertEqual(result["user"]["id"], "123")
+        self.assertEqual(client.last_public_web_relay_request_count, 2)
+        relay_call = client.public_request.await_args_list[1]
+        self.assertEqual(relay_call.kwargs["headers"]["X-FB-LSD"], "AbbIbpXEk7LzHVDVddCAn7")
+        self.assertEqual(relay_call.kwargs["data"]["lsd"], "AbbIbpXEk7LzHVDVddCAn7")
 
     async def test_public_web_relay_rejects_authenticated_cookie_state(self):
         client = Client(public_transport="curl")
