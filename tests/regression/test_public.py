@@ -6,6 +6,7 @@ import orjson
 
 from aiograpi import Client
 from aiograpi.exceptions import ClientGraphqlError, ClientLoginRequired
+from aiograpi.mixins.user import PUBLIC_WEB_PROFILE_DOC_ID
 
 
 class PublicRequestRegressionTestCase(unittest.IsolatedAsyncioTestCase):
@@ -50,7 +51,7 @@ class PublicRequestRegressionTestCase(unittest.IsolatedAsyncioTestCase):
         client.public_request = AsyncMock(side_effect=[self._relay_bootstrap_html(), response, response])
 
         first = await client.public_web_relay_request(
-            "28036671149327607",
+            PUBLIC_WEB_PROFILE_DOC_ID,
             {"id": "123"},
             referer="https://www.instagram.com/example/",
             friendly_name="PolarisProfilePageContentQuery",
@@ -66,14 +67,14 @@ class PublicRequestRegressionTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(relay_call.kwargs["data"]["__a"], "1")
         self.assertEqual(relay_call.kwargs["data"]["__hsi"], "7335888108907652597")
         self.assertEqual(relay_call.kwargs["data"]["jazoest"], "26582")
-        self.assertEqual(relay_call.kwargs["data"]["doc_id"], "28036671149327607")
+        self.assertEqual(relay_call.kwargs["data"]["doc_id"], PUBLIC_WEB_PROFILE_DOC_ID)
         self.assertEqual(relay_call.kwargs["headers"]["X-FB-LSD"], "6b2800R9u4biJOYjcdXFEIabc")
         self.assertEqual(relay_call.kwargs["headers"]["Sec-Fetch-Site"], "same-origin")
         self.assertEqual(relay_call.kwargs["headers"]["Sec-Ch-Ua-Mobile"], "?0")
         self.assertEqual(relay_call.kwargs["headers"]["X-IG-Max-Touch-Points"], "0")
 
         second = await client.public_web_relay_request(
-            "28036671149327607",
+            PUBLIC_WEB_PROFILE_DOC_ID,
             {"id": "124"},
             referer="https://www.instagram.com/another.example/",
             friendly_name="PolarisProfilePageContentQuery",
@@ -90,7 +91,7 @@ class PublicRequestRegressionTestCase(unittest.IsolatedAsyncioTestCase):
         client.public_request = AsyncMock(side_effect=[self._modern_relay_bootstrap_html(), response])
 
         result = await client.public_web_relay_request(
-            "28036671149327607",
+            PUBLIC_WEB_PROFILE_DOC_ID,
             {"id": "123"},
             referer="https://www.instagram.com/example/",
             friendly_name="PolarisProfilePageContentQuery",
@@ -109,7 +110,7 @@ class PublicRequestRegressionTestCase(unittest.IsolatedAsyncioTestCase):
 
         with self.assertRaises(ClientGraphqlError):
             await client.public_web_relay_request(
-                "28036671149327607",
+                PUBLIC_WEB_PROFILE_DOC_ID,
                 {"id": "123"},
                 referer="https://www.instagram.com/example/",
                 friendly_name="PolarisProfilePageContentQuery",
@@ -125,7 +126,7 @@ class PublicRequestRegressionTestCase(unittest.IsolatedAsyncioTestCase):
 
         with self.assertRaises(ClientGraphqlError):
             await client.public_web_relay_request(
-                "28036671149327607",
+                PUBLIC_WEB_PROFILE_DOC_ID,
                 {"id": "123"},
                 referer="https://www.instagram.com/example/",
                 friendly_name="PolarisProfilePageContentQuery",
@@ -140,7 +141,7 @@ class PublicRequestRegressionTestCase(unittest.IsolatedAsyncioTestCase):
 
         with self.assertRaises(ClientGraphqlError):
             await client.public_web_relay_request(
-                "28036671149327607",
+                PUBLIC_WEB_PROFILE_DOC_ID,
                 {"id": "123"},
                 referer="https://www.instagram.com/example/",
                 friendly_name="PolarisProfilePageContentQuery",
@@ -154,7 +155,7 @@ class PublicRequestRegressionTestCase(unittest.IsolatedAsyncioTestCase):
 
         with self.assertRaisesRegex(ClientGraphqlError, "warm Relay context"):
             await client.public_web_relay_request(
-                "28036671149327607",
+                PUBLIC_WEB_PROFILE_DOC_ID,
                 {"id": "123"},
                 referer="https://www.instagram.com/example/",
                 friendly_name="PolarisProfilePageContentQuery",
@@ -173,7 +174,7 @@ class PublicRequestRegressionTestCase(unittest.IsolatedAsyncioTestCase):
         client.public_request = AsyncMock(side_effect=[self._relay_bootstrap_html(), response])
 
         await client.public_web_relay_request(
-            "28036671149327607",
+            PUBLIC_WEB_PROFILE_DOC_ID,
             {"id": "123"},
             referer="https://www.instagram.com/example/",
             friendly_name="PolarisProfilePageContentQuery",
