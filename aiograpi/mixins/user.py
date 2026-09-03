@@ -68,7 +68,10 @@ FOLLOWERS_ORDERS = ("date_followed_latest", "date_followed_earliest")
 USER_WEB_PROFILE_DOC_ID = "26762473490008061"
 USER_INFO_V2_DOC_ID = "25980296051578533"
 USER_INFO_BY_USERNAME_V2_DOC_ID = "26347858941511777"
-PUBLIC_WEB_PROFILE_DOC_ID = "28036671149327607"
+# Current anonymous profile operation observed in the public Polaris profile
+# route. Instagram rotates registered document IDs; callers must still gate
+# this operation behind a bounded canary before relying on it in production.
+PUBLIC_WEB_PROFILE_DOC_ID = "18113378221181848"
 PUBLIC_WEB_PROFILE_FRIENDLY_NAME = "PolarisProfilePageContentQuery"
 FOLLOWERS_LIST_CLIENT_DOC_ID = "28479704797510738576165798526"
 # Candidate extracted from the current Android release family. Keep the
